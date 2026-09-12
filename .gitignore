@@ -12,6 +12,15 @@ env/
 
 # Environment variables / API keys
 .env
+!.env.example
+
+# 本地资料与向量库（用户上传内容，不入库）
+data/
+
+# 构建与缓存
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
 
 # OS
 .DS_Store
