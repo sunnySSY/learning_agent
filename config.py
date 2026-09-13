@@ -68,5 +68,30 @@ class Config:
         default_factory=lambda: _opt("LANGSMITH_TRACING", "false").lower() == "true"
     )
 
+    # ---- Phase 2：工具 ----
+    # 留空则联网搜索工具自动禁用
+    tavily_api_key: str = field(default_factory=lambda: _opt("TAVILY_API_KEY", ""))
+    tavily_max_results: int = field(
+        default_factory=lambda: int(_opt("TAVILY_MAX_RESULTS", "5"))
+    )
+    tavily_search_depth: str = field(
+        default_factory=lambda: _opt("TAVILY_SEARCH_DEPTH", "basic")
+    )
+
+    # 工具调用的三道闸
+    tool_timeout: float = field(default_factory=lambda: float(_opt("TOOL_TIMEOUT", "15")))
+    tool_max_retries: int = field(default_factory=lambda: int(_opt("TOOL_MAX_RETRIES", "2")))
+    max_tool_calls: int = field(default_factory=lambda: int(_opt("MAX_TOOL_CALLS", "6")))
+
+    # 工具产物
+    flashcard_dir: Path = field(
+        default_factory=lambda: Path(_opt("FLASHCARD_DIR", "./data/flashcards"))
+    )
+    trace_dir: Path = field(default_factory=lambda: Path(_opt("TRACE_DIR", "./data/traces")))
+
+    @property
+    def web_search_enabled(self) -> bool:
+        return bool(self.tavily_api_key)
+
 
 cfg = Config()
