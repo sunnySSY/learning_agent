@@ -54,6 +54,59 @@ graph LR
 An answer is only shipped after it passes review; if review fails twice, the graph degrades gracefully
 into a clarifying question rather than returning an unverified answer.
 
+## RAG Evaluation
+
+Reports Recall@k, citation precision, refusal accuracy, and average latency, then lists failing
+cases. Non-zero exit code means at least one question failed.
+
+Current baseline (`--no-llm`, 38 questions, `top_k=4`):
+
+| Metric | Value |
+|---|---|
+| Recall@4 | 74.3% (29/38) |
+| Citation precision | 18.6% |
+| Avg. latency | 0.80 s |
+
+Citation precision is well below the 90% target — reranking and hybrid retrieval are the next
+focus areas.
+
+## Project layout
+
+```
+learning_agent/
+├─ main.py             # CLI entry point (display only; all logic lives in the packages)
+├─ config.py           # .env-backed configuration
+├─ llm.py              # chat model factory
+├─ memory.py           # per-session conversation memory (JSON on disk)
+├─ graph/              # LangGraph orchestration
+│  ├─ state.py         #   TaskState and the AgentResult contract
+│  ├─ nodes.py         #   the six agent nodes and their prompts
+│  └─ builder.py       #   routing functions and graph assembly
+├─ rag/                # retrieval pipeline
+│  ├─ loader.py        #   PDF / Markdown / TXT loading with metadata
+│  ├─ splitter.py      #   format-aware chunking that preserves heading paths and line numbers
+│  ├─ embedder.py      #   DashScope embedding wrapper
+│  ├─ store.py         #   local Chroma vector store
+│  ├─ manifest.py      #   content-hash manifest enabling incremental ingest
+│  ├─ retriever.py     #   search plus citation formatting
+│  └─ pipeline.py      #   index / sync / ask entry points
+├─ tools/              # tool registry and implementations
+│  ├─ registry.py      #   budget, timeout, retry, tracing guardrails
+│  ├─ calculator.py    #   AST-based safe math evaluation
+│  ├─ web_search.py    #   Tavily search
+│  └─ flashcard.py     #   flashcard generation
+├─ evaluation/         # regression harness and 38-question dataset
+└─ data/               # local documents, vector store, memory, traces (git-ignored)
+```
+
+## Status
+
+**Implemented:** RAG pipeline with incremental indexing (Phase 1), guarded tool calling (Phase 2),
+and LangGraph multi-agent orchestration (Phase 3).
+
+**Not yet implemented:** long-term learner profiles, multimodal input (formula and problem
+screenshots), hybrid retrieval with reranking, and a web API layer.
+
 ## Requirements
 
 - Python 3.11+
@@ -109,65 +162,6 @@ In-chat commands:
 | `/stats` | Vector store status |
 | `/new` | Clear the current session memory |
 | `/exit` | Quit |
-
-## Evaluation
-
-```bash
-python evaluation/run.py --no-llm   # retrieval only — fast and free
-python evaluation/run.py            # retrieval + generation (consumes tokens)
-python evaluation/run.py --top-k 6 --limit 10
-```
-
-Reports Recall@k, citation precision, refusal accuracy, and average latency, then lists failing
-cases. Non-zero exit code means at least one question failed.
-
-Current baseline (`--no-llm`, 38 questions, `top_k=4`):
-
-| Metric | Value |
-|---|---|
-| Recall@4 | 74.3% (29/38) |
-| Citation precision | 18.6% |
-| Avg. latency | 0.80 s |
-
-Citation precision is well below the 90% target — reranking and hybrid retrieval are the next
-focus areas.
-
-## Project layout
-
-```
-learning_agent/
-├─ main.py             # CLI entry point (display only; all logic lives in the packages)
-├─ config.py           # .env-backed configuration
-├─ llm.py              # chat model factory
-├─ memory.py           # per-session conversation memory (JSON on disk)
-├─ graph/              # LangGraph orchestration
-│  ├─ state.py         #   TaskState and the AgentResult contract
-│  ├─ nodes.py         #   the six agent nodes and their prompts
-│  └─ builder.py       #   routing functions and graph assembly
-├─ rag/                # retrieval pipeline
-│  ├─ loader.py        #   PDF / Markdown / TXT loading with metadata
-│  ├─ splitter.py      #   format-aware chunking that preserves heading paths and line numbers
-│  ├─ embedder.py      #   DashScope embedding wrapper
-│  ├─ store.py         #   local Chroma vector store
-│  ├─ manifest.py      #   content-hash manifest enabling incremental ingest
-│  ├─ retriever.py     #   search plus citation formatting
-│  └─ pipeline.py      #   index / sync / ask entry points
-├─ tools/              # tool registry and implementations
-│  ├─ registry.py      #   budget, timeout, retry, tracing guardrails
-│  ├─ calculator.py    #   AST-based safe math evaluation
-│  ├─ web_search.py    #   Tavily search
-│  └─ flashcard.py     #   flashcard generation
-├─ evaluation/         # regression harness and 38-question dataset
-└─ data/               # local documents, vector store, memory, traces (git-ignored)
-```
-
-## Status
-
-**Implemented:** RAG pipeline with incremental indexing (Phase 1), guarded tool calling (Phase 2),
-and LangGraph multi-agent orchestration (Phase 3).
-
-**Not yet implemented:** long-term learner profiles, multimodal input (formula and problem
-screenshots), hybrid retrieval with reranking, and a web API layer.
 
 ## Documentation
 
