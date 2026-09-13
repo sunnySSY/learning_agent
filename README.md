@@ -1,6 +1,6 @@
 # Study Helper Agent
 
-A local-first study assistant built on LangChain + LangGraph and Qwen (Alibaba Cloud DashScope).
+A local-first study assistant built on LangChain + LangGraph and Qwen (can be replaced).
 Point it at your own lecture notes and textbooks, ask questions in natural language, and get
 answers that cite the exact page, heading, or line they came from.
 
@@ -57,7 +57,7 @@ into a clarifying question rather than returning an unverified answer.
 ## Requirements
 
 - Python 3.11+
-- An Alibaba Cloud DashScope (Model Studio) API key — used for both chat and embeddings
+- An Alibaba Cloud DashScope (Model Studio) API key — used for both chat and embeddings. (Plan to support more providers and models in the future stage)
 - Optional: a [Tavily](https://tavily.com) API key to enable web search
 
 ## Install
