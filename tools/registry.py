@@ -237,3 +237,12 @@ def build_tools(budget: ToolBudget, tracer: ToolTracer) -> list[BaseTool]:
         )
 
     return tools
+
+
+def describe_tools() -> list[str]:
+    """列出当前可用的工具，供 /tools 命令展示。
+
+    只为读名字，所以额度、重试这些都不关心；tracer 随用随弃。
+    """
+    budget, tracer = ToolBudget(cfg.max_tool_calls), ToolTracer()
+    return [f"{t.name} — {t.description.splitlines()[0]}" for t in build_tools(budget, tracer)]
