@@ -10,7 +10,7 @@
 这件事由 registry 统一做，各个工具自己不用管。
 """
 
-from .registry import ToolBudget, ToolError, ToolTracer, build_tools
+from .registry import ToolBudget, ToolError, ToolTracer, build_tools, describe_tools
 
 
-__all__ = ["build_tools", "ToolBudget", "ToolError", "ToolTracer"]
+__all__ = ["build_tools", "describe_tools", "ToolBudget", "ToolError", "ToolTracer"]

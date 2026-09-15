@@ -59,6 +59,10 @@ class Config:
     collection: str = field(default_factory=lambda: _opt("COLLECTION_NAME", "study_helper"))
     data_dir: Path = field(default_factory=lambda: Path(_opt("DATA_DIR", "./data/uploads")))
     memory_dir: Path = field(default_factory=lambda: Path("./data/memory"))
+    # 入库清单：记录每个文件的内容哈希，让重复入库变成幂等操作（见 rag/manifest.py）
+    manifest_path: Path = field(
+        default_factory=lambda: Path(_opt("INDEX_MANIFEST", "./data/index_manifest.json"))
+    )
 
     # LangSmith
     langsmith_project: str = field(
@@ -88,6 +92,13 @@ class Config:
         default_factory=lambda: Path(_opt("FLASHCARD_DIR", "./data/flashcards"))
     )
     trace_dir: Path = field(default_factory=lambda: Path(_opt("TRACE_DIR", "./data/traces")))
+
+    # ---- Phase 3：多 Agent 图 ----
+    # Reviewer 的审核总轮数（含首次）。第 N 次仍不通过就降级为澄清节点。
+    # 每多一轮就多一次模型往返，直接吃掉延迟预算，别调大。
+    review_max_rounds: int = field(
+        default_factory=lambda: int(_opt("REVIEW_MAX_ROUNDS", "2"))
+    )
 
     @property
     def web_search_enabled(self) -> bool:

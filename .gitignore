@@ -25,3 +25,7 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Resume md
+RESUME_PROJECT.md
+CLAUDE_RESUME.md
