@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#152d3a" />
+    <title>拾光学习助手</title>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark">拾</div>
+          <div>
+            <strong>拾光</strong>
+            <span>学习助手</span>
+          </div>
+        </div>
+
+        <nav class="main-nav" aria-label="主导航">
+          <button class="nav-item is-active" data-view="chat">
+            <span class="nav-icon">◌</span><span>对话学习</span>
+          </button>
+          <button class="nav-item" data-view="library">
+            <span class="nav-icon">▧</span><span>资料库</span>
+          </button>
+          <button class="nav-item" data-view="archive">
+            <span class="nav-icon">◫</span><span>学习档案</span>
+          </button>
+        </nav>
+
+        <div class="archive-nav" id="archive-nav" hidden>
+          <div class="side-label">档案导航</div>
+          <button class="archive-nav-item is-active" data-archive-section="overview">总览</button>
+          <button class="archive-nav-item" data-archive-section="profile">个人偏好</button>
+          <button class="archive-nav-item" data-archive-section="knowledge">知识点</button>
+          <button class="archive-nav-item" data-archive-section="review">复习计划</button>
+        </div>
+
+        <div class="session-panel">
+          <div class="panel-heading">
+            <span>我的会话</span>
+            <button class="icon-button" id="new-session" title="新建会话" aria-label="新建会话">＋</button>
+          </div>
+          <div class="session-list" id="session-list">
+            <div class="empty-small">正在加载会话…</div>
+          </div>
+        </div>
+
+        <div class="sidebar-footer">
+          <button class="user-chip" id="open-settings">
+            <span class="avatar">学</span>
+            <span class="user-chip-text"><strong>学习者</strong><small>本地工作区</small></span>
+            <span class="more">⋯</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="mobile-menu" id="mobile-menu" aria-label="打开菜单">☰</button>
+            <div class="breadcrumbs"><span id="breadcrumb-root">对话学习</span><span class="breadcrumb-divider">/</span><strong id="breadcrumb-current">新问题</strong></div>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" id="refresh-page"><span>↻</span> 刷新</button>
+            <button class="primary-button compact" id="quick-new-session">＋ 新会话</button>
+          </div>
+        </header>
+
+        <div class="page-content">
+          <section class="view is-visible" id="view-chat">
+            <div class="chat-layout">
+              <div class="chat-column">
+                <div class="view-heading chat-heading">
+                  <div>
+                    <div class="eyebrow">FOCUS ROOM</div>
+                    <h1 id="chat-title">今天想学点什么？</h1>
+                    <p id="chat-subtitle">把问题交给我，我们一起把复杂的内容拆成清晰的步骤。</p>
+                  </div>
+                  <div class="session-title-pill" id="current-session-pill">未选择会话</div>
+                </div>
+
+                <div class="messages" id="messages">
+                  <div class="welcome-card" id="welcome-card">
+                    <div class="welcome-orb">✦</div>
+                    <h2>从一个问题开始</h2>
+                    <p>可以问我解释概念、梳理资料、制定学习计划，或者帮你复盘刚刚做错的题。</p>
+                    <div class="suggestion-grid">
+                      <button class="suggestion-card" data-prompt="请帮我制定今天的学习计划">
+                        <span class="suggestion-icon warm">☀</span><span><b>制定学习计划</b><small>安排今天的学习节奏</small></span>
+                      </button>
+                      <button class="suggestion-card" data-prompt="用一个例子解释什么是特征值">
+                        <span class="suggestion-icon blue">◇</span><span><b>解释一个概念</b><small>从直觉和例子开始理解</small></span>
+                      </button>
+                      <button class="suggestion-card" data-prompt="帮我复盘最近容易出错的知识点">
+                        <span class="suggestion-icon green">✓</span><span><b>复盘薄弱点</b><small>找到下一步最值得练习的内容</small></span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="composer-wrap">
+                  <form class="composer" id="composer">
+                    <textarea id="message-input" rows="1" placeholder="输入你的问题…" autocomplete="off"></textarea>
+                    <div class="composer-toolbar">
+                      <label class="attach-button" title="上传图片题目">
+                        <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+                        <span>⌕</span> 添加题目图片
+                      </label>
+                      <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+                      <button class="send-button" id="send-button" type="submit" aria-label="发送">↑</button>
+                    </div>
+                    <div class="file-chips" id="file-chips"></div>
+                  </form>
+                  <div class="privacy-note">回答会结合你的学习档案进行适配，仅保存在当前用户空间。</div>
+                </div>
+              </div>
+              <aside class="context-card" id="chat-context-card">
+                <div class="context-card-header"><span class="status-dot"></span><span>学习状态</span><button class="tiny-link" data-view-link="archive">查看档案</button></div>
+                <div class="context-score"><div class="ring ring-small" id="chat-progress-ring"><span id="chat-progress-value">—</span></div><div><b id="chat-progress-title">还没有学习记录</b><p id="chat-progress-text">完成几次学习后，这里会显示你的进度概览。</p></div></div>
+                <div class="context-divider"></div>
+                <div class="context-stat"><span>待复习</span><b id="chat-review-count">0 个</b></div>
+                <div class="context-stat"><span>已记录偏好</span><b id="chat-fact-count">0 条</b></div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-library">
+            <div class="view-heading">
+              <div><div class="eyebrow">YOUR LIBRARY</div><h1>资料库</h1><p>把课程资料放进来，学习时可以随时检索和引用。</p></div>
+              <label class="primary-button upload-button"><span>↑</span> 上传资料<input id="library-upload" type="file" accept=".pdf,.md,.markdown,.txt" hidden /></label>
+            </div>
+            <div class="library-summary" id="library-summary"></div>
+            <div class="surface table-surface"><div class="surface-heading"><div><h2>资料清单</h2><p>上传后点击“建立索引”，资料才会进入检索库。</p></div><button class="ghost-button" id="refresh-files">↻ 刷新</button></div><div class="table-scroll"><table class="data-table"><thead><tr><th>资料名称</th><th>状态</th><th>内容规模</th><th>上传时间</th><th></th></tr></thead><tbody id="files-body"></tbody></table></div></div>
+          </section>
+
+          <section class="view" id="view-archive">
+            <div class="view-heading archive-heading"><div><div class="eyebrow">LEARNING PROFILE</div><h1 id="archive-title">学习档案 · 总览</h1><p id="archive-subtitle">把零散的学习痕迹整理成下一步可执行的方向。</p></div><div class="archive-actions"><button class="ghost-button" id="export-memory">↓ 导出档案</button><button class="danger-button" id="delete-memory">清空档案</button></div></div>
+            <div class="archive-section is-visible" data-archive-content="overview"><div id="overview-content"></div></div>
+            <div class="archive-section" data-archive-content="profile"><div id="profile-content"></div></div>
+            <div class="archive-section" data-archive-content="knowledge"><div id="knowledge-content"></div></div>
+            <div class="archive-section" data-archive-content="review"><div id="review-content"></div></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+    <dialog class="modal" id="rename-modal">
+      <form method="dialog" class="modal-card" id="rename-form">
+        <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        <div class="eyebrow">EDIT SESSION</div><h2>重命名会话</h2><p>换一个更容易找到的名字，历史消息和学习记录不会受到影响。</p>
+        <label class="field-label" for="rename-input">会话名称</label><input class="text-input" id="rename-input" maxlength="120" required />
+        <div class="modal-actions"><button class="ghost-button" value="cancel">取消</button><button class="primary-button" id="rename-submit" value="default">保存名称</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="settings-modal">
+      <form method="dialog" class="modal-card" id="settings-form">
+        <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        <div class="eyebrow">WORKSPACE</div><h2>工作区设置</h2><p>前端通过 API 访问当前学习工作区。开发环境默认使用 dev-token。</p>
+        <label class="field-label" for="token-input">访问令牌</label><input class="text-input" id="token-input" type="password" autocomplete="off" />
+        <div class="modal-actions"><button class="ghost-button" value="cancel">取消</button><button class="primary-button" id="save-settings" value="default">保存设置</button></div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="vision-modal">
+      <form method="dialog" class="modal-card wide-modal" id="vision-form">
+        <button class="modal-close" value="cancel" aria-label="关闭">×</button>
+        <div class="eyebrow">CHECK THE QUESTION</div><h2>请确认图片识别结果</h2><p>我发现图片中有一些不确定字段。确认后才会继续解题。</p>
+        <label class="field-label" for="vision-text">识别内容</label><textarea class="text-input textarea-input" id="vision-text" rows="5"></textarea>
+        <div class="modal-actions"><button class="ghost-button" id="vision-cancel" value="cancel">取消本题</button><button class="primary-button" id="vision-confirm" value="default">确认并继续</button></div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/static/js/app.js"></script>
+  </body>
+</html>
