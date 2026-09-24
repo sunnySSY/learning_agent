@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 
@@ -33,7 +33,7 @@ from memory.long_term.service import MemoryService
 
 from .auth import Authenticator, Principal, SlidingWindowLimiter, bearer, ip_digest, request_id
 from .jobs import IndexWorker
-from .observability import ACTIVE_SSE, REQUESTS, REQUEST_LATENCY, RETRIEVER_CALLS, UPLOAD_BYTES, VISION_CALLS, configure_logging, configure_tracing, metrics_payload
+from .observability import configure_logging, configure_tracing
 from .repository import ProductRepository
 from .schemas import ChatPayload, Problem, ThreadCreate, ThreadRename, VisionConfirmation
 from .vision import VisionResult, VisionService, context_text, preprocess_image
@@ -147,7 +147,7 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
     cfg.validate_service()
     os.environ["LEARNING_AGENT_API"] = "1"
     if not cfg.service_langsmith_tracing:
-        # The service defaults to local OTel/Prometheus only.  This prevents a
+        # The service defaults to local OTel only.  This prevents a
         # pre-existing CLI LangSmith setting from sending prompts or exposing
         # provider diagnostics during API failures.
         os.environ["LANGSMITH_TRACING"] = "false"
@@ -182,7 +182,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
     @app.middleware("http")
     async def request_context(request: Request, call_next):
         rid = request_id(request); request.state.request_id = rid
-        start = __import__("time").perf_counter()
         span_context = tracer.start_as_current_span("http.request") if tracer else None
         span = span_context.__enter__() if span_context else None
         if span:
@@ -197,9 +196,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
                 response.headers["X-RateLimit-Limit"] = str(rate[0]); response.headers["X-RateLimit-Remaining"] = str(rate[1]); response.headers["X-RateLimit-Reset"] = str(rate[2])
             return response
         finally:
-            route = getattr(request.scope.get("route"), "path", request.url.path)
-            REQUESTS.labels(request.method, route, str(locals().get("status", 500))).inc()
-            REQUEST_LATENCY.labels(request.method, route).observe(__import__("time").perf_counter() - start)
             if span_context:
                 span_context.__exit__(None, None, None)
 
@@ -258,10 +254,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(503, "服务尚未就绪") from exc
 
-    @app.get("/metrics")
-    async def metrics(principal: Principal = Depends(current_user)):
-        return Response(metrics_payload(), media_type="text/plain; version=0.0.4")
-
     @app.post("/v1/files", status_code=201)
     async def upload_file(request: Request, file: UploadFile = File(...), display_name: str | None = Form(None), principal: Principal = Depends(current_user)):
         limited(request, principal)
@@ -279,7 +271,7 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
             row = repo.insert_file(principal.user_id, _safe_name(display_name or file.filename or "file"), relative, media_type, len(data), hashlib.sha256(data).hexdigest(), file_id=file_id)
         except Exception:
             path.unlink(missing_ok=True); raise
-        UPLOAD_BYTES.inc(len(data)); repo.audit(principal.user_id, "upload", "file", file_id, "accepted", request.state.request_id, ip_digest(request))
+        repo.audit(principal.user_id, "upload", "file", file_id, "accepted", request.state.request_id, ip_digest(request))
         return _file_view(row, repo)
 
     @app.get("/v1/files")
@@ -383,7 +375,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
         return response
 
     def chat_events(principal: Principal, turn: dict, message: str, *, images_info: list, image_context: dict | None, request_id_value: str, release_slot: bool = True):
-        ACTIVE_SSE.inc()
         try:
             yield "turn.started", {"turn_id": turn["id"], "thread_id": turn["thread_id"], "request_id": request_id_value}
             if images_info:
@@ -393,9 +384,8 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
                     yield "error", {"code": "concurrency_limited", "message": "图片识别并发已达上限，请稍后重试", "retryable": True, "request_id": request_id_value}; return
                 try:
                     parsed: VisionResult = app.state.vision.parse(images_info)
-                    VISION_CALLS.labels("ok").inc()
                 except Exception:
-                    VISION_CALLS.labels("error").inc(); repo.update_turn(principal.user_id, turn["id"], status="failed")
+                    repo.update_turn(principal.user_id, turn["id"], status="failed")
                     _cleanup_turn_images(repo, principal.user_id, turn["id"])
                     yield "error", {"code": "provider_unavailable", "message": "图片识别暂时不可用，请稍后重试", "retryable": True, "request_id": request_id_value}; return
                 finally:
@@ -441,7 +431,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
                         repo.update_turn(principal.user_id, turn["id"], status="completed", answer=answer, citations_json=json.dumps(citations, ensure_ascii=False), tool_calls_json=json.dumps(tool_summaries, ensure_ascii=False, default=str))
                         try: MemoryService(learning_store()).commit_turn(principal.user_id, turn["thread_id"], turn["id"], message, answer, request_id_value)
                         except Exception: log.error("memory commit failed", extra={"event": "memory_commit_failed", "object_id": turn["id"]})
-                        RETRIEVER_CALLS.labels("with_citations" if citations else "no_evidence").inc()
                         _cleanup_turn_images(repo, principal.user_id, turn["id"])
                         yield "answer.completed", {"answer": answer, "citations": citations, "tool_calls": tool_summaries}
                         yield "turn.completed", {"turn_id": turn["id"], "status": "completed", "usage": {}}
@@ -451,7 +440,6 @@ def create_app(repository: ProductRepository | None = None) -> FastAPI:
                 _cleanup_turn_images(repo, principal.user_id, turn["id"])
                 yield "error", {"code": "provider_unavailable", "message": "回答服务暂时不可用，请稍后重试", "retryable": True, "request_id": request_id_value}
         finally:
-            ACTIVE_SSE.dec()
             if release_slot:
                 chat_slots.release()
 

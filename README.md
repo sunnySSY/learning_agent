@@ -25,7 +25,7 @@ indexed into RAG.
   accuracy, and latency.
 - **Phase 5 service** — FastAPI Bearer-authenticated API, SSE chat, explicit upload/index jobs,
   versioned user-scoped RAG, structured Vision confirmation, standalone HTML/CSS/JS client, export/delete,
-  rate limits, audit events, Prometheus metrics, and Docker Compose roles.
+  rate limits, audit events, and structured logs.
 
 Run the API with `python api_server.py` and open `http://127.0.0.1:8000` for the standalone HTML/CSS/JS client. In
 development, `Bearer dev-token` is the only accepted credential. Uploading a file only stores it;

@@ -1,25 +1,12 @@
-"""Low-cardinality metrics and privacy-preserving structured logs."""
+"""Privacy-preserving structured logs and optional OpenTelemetry tracing."""
 
 from __future__ import annotations
 
 import json
 import logging
 import time
-from contextlib import contextmanager
-
-from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
 _TRACER = None
-
-
-REQUESTS = Counter("http_requests_total", "HTTP requests", ["method", "route", "status"])
-REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["method", "route"])
-ACTIVE_SSE = Gauge("active_sse_connections", "Active SSE streams")
-UPLOAD_BYTES = Counter("uploaded_bytes_total", "Accepted upload bytes")
-INDEX_JOBS = Counter("index_jobs_total", "Index jobs", ["status", "stage"])
-INDEX_QUEUE_OLDEST = Gauge("index_queue_oldest_seconds", "Age of oldest queued index job")
-VISION_CALLS = Counter("vision_calls_total", "Vision calls", ["status"])
-RETRIEVER_CALLS = Counter("retriever_calls_total", "Retriever calls", ["result"])
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -65,15 +52,3 @@ def configure_tracing(endpoint: str = ""):
         _TRACER = None
     return _TRACER
 
-
-def metrics_payload() -> bytes:
-    return generate_latest()
-
-
-@contextmanager
-def timed(histogram: Histogram, *labels):
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        histogram.labels(*labels).observe(time.perf_counter() - start)

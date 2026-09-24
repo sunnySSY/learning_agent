@@ -10,7 +10,30 @@
 | `README.md` | 怎么装、怎么跑、各模块怎么设计（面向使用者） |
 | **本文（PROGRESS.md）** | 哪些做完了、哪些没做、验证到哪、还剩哪些坑 |
 
-**更新日期**：2026-09-13　**当前阶段**：Phase 3 已完成，Phase 4 / Phase 5 未开始
+**更新日期**：2026-09-19　**当前阶段**：Phase 5 P0 服务闭环已实现；本地单实例测试通过，生产多实例适配见 `PHASE5_ISSUES.md`
+
+### 2026-09-19：Phase 5 P0 服务闭环
+
+- 新增 `app/` 服务包：FastAPI 路由、Bearer/JWT 身份、用户映射、对象级授权、统一 problem+json、请求 ID、限流、并发闸门、审计和 OTel 基础设施。
+- 文件 API 只落盘，`POST /v1/files/{file_id}/index-jobs` 才创建入库任务；SQLite 元数据记录文件状态、任务阶段、幂等键、失败错误和 active index version。
+- RAG 元数据支持 `file_id/index_version`，重建先写新版本后切换 active；失败版本不会被召回，删除通过 tombstone 隐藏并清理向量/原文件。
+- 新增 SSE 文本/图片对话、结构化 Vision 适配器、低置信度确认、图片签名/EXIF/像素检查和 24 小时附件清理；图片不会自动进入 RAG。
+- 新增独立 HTML/CSS/JS 对话、资料库、学习档案页面和 CI 工作流。
+- `tests/test_phase5_api.py` 覆盖上传不入库、幂等、跨用户隔离、删除、SSE 重放、确认流程和会话重命名；全套回归共 37 项通过。真实 Vision/云模型未在 CI 调用。
+
+### 2026-09-17：Phase 4 首个里程碑
+
+- 记忆模块参照 `rag/` 拆为 `memory/` 包：checkpoint、store、legacy、pipeline；`__init__.py` 统一导出原有接口，CLI 与 graph 的公共导入保持兼容。
+- 接入 `langgraph-checkpoint-sqlite==3.1.1`；在当前 LangGraph 1.2.11 / langchain-core 1.6.2 环境验证。
+- CLI 使用 SQLite saver 与 UUID thread_id；支持重启继续、`/threads`、`/session 名称`、`/resume`、`/new` 删除全部检查点。
+- messages 通过 add_messages 保存；只追加本轮输入与最终答案，业务临时状态每轮重置；历史窗口默认 20 条。
+- 默认用户旧 JSON 校验后一次性导入；保留旧文件，清空会话后不再导入。
+- 修复用户／会话混用，入库与检索均使用 `--user`；manifest 升级为用户／路径联合键，source 删除带用户条件。
+- Reviewer 输入补入本轮答案与工具结果摘要；未据此宣称审核质量改善。
+- 28 项离线测试覆盖完整图持久化、独立进程读取、隔离、序列化、中断恢复、状态重置、审核重试、长期记忆候选/冲突、知识点重算、复习反馈幂等、原子导出、事实上下文删除、删除任务、CLI 和 RAG 用户范围。没有调用真实云端模型或重跑在线 RAG 评估。实现边界见 `PHASE4_LIMITATIONS.md`。
+- 尚未实现：结构化输出容错、工具副作用重放去重、长会话摘要和在线提取质量评估。它们不属于本次 Phase 4 的已验证核心闭环；Phase 4 仍保留单进程 SQLite 限制。
+
+以下既有记录保留为历史说明；与本节冲突的 JSON 会话与身份混用描述以本节为准。
 
 ---
 
@@ -26,15 +49,17 @@
 | 工具调用轨迹落盘 | ✅ 完成 | 自动写 `data/traces/*.jsonl` | `tools/registry.py:ToolTracer` |
 | 多 Agent 主图（6 节点 + 4 路由） | ✅ 完成 | 问答时自动 | `graph/builder.py` `nodes.py` |
 | 流式节点事件 | ✅ 完成 | 终端逐行显示 `[节点] 说明` | `graph/builder.py:run_stream` |
-| 会话记忆（短期，JSON 文件） | ⚠️ 部分 | `--session` / `/new` | `memory.py` |
+| 会话记忆（SQLite checkpointer） | ✅ 首个里程碑 | `--session` / `/session` / `/resume` / `/new` | `memory/`、`graph/` |
 | 回归集与跑分脚本 | ✅ 完成 | `python evaluation/run.py` | `evaluation/` |
 | 向量库内容查看工具 | ✅ 完成 | `python inspect_store.py ...` | `inspect_store.py` |
 | 混合检索（BM25）+ 重排 + 相关度阈值 | ❌ 未做 | — | 待补 `rag/retriever.py` |
 | 沙箱代码执行工具 | ❌ 未做 | — | 待补 `tools/code_runner.py` |
-| 长期记忆 / 学习档案 | ❌ 未做 | — | Phase 4 |
-| 多模态读图 | ❌ 未做 | — | Phase 5（`rag/loader.py` 曾有过图片分支，改包结构时移除） |
-| 界面 / API / 鉴权 / 部署 | ❌ 未做 | — | Phase 5 |
-| 单元测试 / CI / `.env.example` | ❌ 未做 | — | 工程项 |
+| 长期记忆 / 学习档案 | ✅ P0 | `/memory`、`LEARNING_DB` | `memory/long_term/repository.py`、`extraction.py` |
+| 知识点状态 / 复习调度 | ✅ P0 | `/knowledge`、`/review` | `memory/long_term/knowledge.py`、`scheduler.py` |
+| 记忆导出 / 用户删除 | ✅ P0 | `/data export`、`/data delete` | `memory/long_term/privacy.py` |
+| 多模态读图 | ✅ P0 | `/v1/chat/stream` + Vision 确认 | `app/vision.py` `app/api.py` |
+| 界面 / API / 鉴权 | ✅ P0（单实例） | `api_server.py`、浏览器访问 `:8000` | `frontend/` `app/` |
+| 单元测试 / CI / `.env.example` | ✅ P0 | `python -m pytest -q` | `tests/` `.github/workflows/ci.yml` |
 
 **当前库内实际数据**：`data/uploads/` 7 个文件 → 向量库 145 个分片（`rag.stats()` 实测）；会话记忆 1 个（`default.json`）；工具轨迹 6 个 JSONL；复习卡片 1 个（`特征值.json`）。
 
@@ -232,7 +257,7 @@ python inspect_store.py --raw            # 数据库表结构
 
 ### 2.5 会话记忆（Phase 4 的一小部分）
 
-`memory.py`：一个会话一个 JSON 文件，存 `./data/memory/<会话名>.json`，重启后能接上。`window=20` 表示只把最近 20 条消息喂给模型。`--session 线性代数` 换文件，`/new` 清空。
+历史实现为 `memory.py`：一个会话一个 JSON 文件，存 `./data/memory/<会话名>.json`，重启后能接上。旧 JSON 兼容逻辑现位于 `memory/short_term/legacy.py`；当前 CLI 已使用 checkpointer，见本文首个里程碑。
 
 **注意这不是计划书 4.1 设计的短期记忆**：不是 LangGraph checkpointer，`TaskState` 里没有 `thread_id` / `messages`，节点级中间状态不会被保存和恢复。它只是"整份历史按窗口裁剪后拼进 prompt"，没有摘要、没有压缩。真正的 checkpointer 归 Phase 4。
 
@@ -310,35 +335,36 @@ python evaluation/run.py --limit 10 # 只跑前 10 题
 | **路由函数单元测试** | 四个路由已是纯函数，`PROJECT_PLAN 7` 要求的"状态路由"单测可以直接 import，成本很低 |
 | **引用/编号的程序化校验** | 引用**列表**已能按正文实际引用过滤（`_cited_only`），但正文里的 `[n]` 是否指向正确的片段，仍完全靠 Reviewer 的模型判断，没有规则兜底 |
 
-### 3.4 Phase 4：记忆（整块未开始）
+### 3.4 Phase 4：记忆（P0 已实现）
 
 | 缺什么 | 对应计划书 |
 |---|---|
-| **LangGraph checkpointer + `thread_id` 的短期记忆** | 3.5。替代或共存于现在的 `memory.py` 方案；`TaskState` 已按可序列化准备（工具轨迹存 `asdict`），接的时候不用返工 |
-| **长期学习档案**（以 `user_id` 为键：目标考试、掌握度、错题、偏好、最近复习时间） | 3.5 |
-| **记忆提取器 + 置信度阈值** | 3.5。防止把模型猜测当成事实写进长期记忆 |
-| **查看 / 修改 / 删除 / 导出接口、TTL 与隐私策略** | 3.5、4.2、检查清单 |
+| **LangGraph checkpointer + `thread_id` 的短期记忆** | 已实现；见本文首个里程碑与离线测试 |
+| **长期学习档案**（目标、偏好、学习困难、来源引文） | 已实现；`learning.sqlite`，按用户隔离 |
+| **记忆提取器 + 置信度阈值** | 已实现 P0 规则提取；显式事实自动确认，偏好/困难候选待确认 |
+| **知识点状态、学习证据与 interval_v1 复习计划** | 已实现；支持自评、反馈、延期、预算和幂等 request_id |
+| **查看 / 修改 / 删除 / 导出接口** | 已实现 CLI；支持 memory/thread/all 范围和原子 JSON 导出 |
+| **TTL、长会话摘要、在线提取质量评估** | 未实现，记录为后续增强 |
 | **对话上下文摘要/压缩** | 3.5。现在只有"截最近 20 条"这一种策略，长对话会直接丢早期信息 |
 
-### 3.5 Phase 5：多模态与产品化（整块未开始）
+### 3.5 Phase 5：多模态与产品化（P0 已实现，生产适配待补）
 
 | 缺什么 | 说明 |
 |---|---|
-| **Vision 多模态读图** | 计划书 3.6：图片预处理 → Vision 模型抽取题目/公式/图表文字 → 标注"来自图片的识别内容"→ 低置信度要用户确认。`rag/loader.py` 里曾有过图片分支，改成包结构时移除了 |
-| **界面 + 显式的「入库（RAG）」按钮** | `PROJECT_PLAN.md` Phase 5 新增的硬要求：上传只落盘，**点一下才分片入库**；按钮旁显示每个文件的索引状态（未入库 / 入库中 / 已入库 N 分片 / 错误原因）。这是为了解决"文件放进去了但检索不到"的第一屏困惑 |
-| **API 层** | 计划书 4.2 的 6 个端点（`/v1/chat/stream`、`/v1/files` 等），含 SSE 流式 |
-| **鉴权、限流、用户级隔离** | 检查清单要求"文件和记忆具备用户级隔离、删除和错误恢复" |
-| **容器化与部署** | Docker Compose（开发）、API/worker/DB/向量库分离（生产） |
-| **成本控制** | 相同查询的 embedding / 搜索结果缓存、长对话摘要、简单问题用小模型、token 与并发上限 |
-| **在线可观测性** | 节点耗时、工具错误、用户反馈、prompt 脱敏 |
+| **Vision 多模态读图** | ✅ P0：图片签名/MIME、EXIF 清理、尺寸限制、结构化 `vision_parse_v1`、低置信度确认；真实供应商验收待配置 Vision 模型 |
+| **界面 + 显式的「入库（RAG）」按钮** | ✅ P0：独立前端资料库页上传只落盘，按钮才创建 `/index-jobs`，列表显示状态/分片/错误 |
+| **API 层** | ✅ P0：`/v1/files`、index jobs、SSE chat、Vision confirmation、threads、memory、health |
+| **鉴权、限流、用户级隔离** | ✅ P0 单实例：Bearer dev/JWT、对象级 404、用户/IP sliding window、配额、审计；生产共享 Redis 待接入 |
+| **成本控制** | ✅ 上传不产生 embedding、显式任务幂等/并发/日配额、图片/文件大小配额；token 级成本账本待生产模型适配 |
+| **在线可观测性** | ✅ 结构化脱敏日志、可选 OTel；完整成本告警属于后续运维工作 |
 
 ### 3.6 工程项
 
 | 缺什么 | 说明 |
 |---|---|
-| **`tests/`**（单元 + 集成 + 安全测试） | 计划书 7 列了一整套；现在一个测试目录都没有 |
-| **CI** | Phase 0 要求，未做 |
-| **`.env.example`** | `README.md` 让用户"复制 `.env.example` 为 `.env`"，但这个文件不存在。`.gitignore` 里已留白名单 |
+| **`tests/`**（单元 + 集成 + 安全测试） | ✅ 34 项回归与 API 安全测试；真实云模型/供应商故障注入未纳入 CI |
+| **CI** | ✅ `.github/workflows/ci.yml`：安装依赖、compileall、pytest |
+| **`.env.example`** | ✅ 已加入 Phase 5 运行、认证、存储、限流、Vision、OTel 示例 |
 | **依赖锁定** | Phase 0 要求"依赖锁定"，`requirements.txt` 目前一个版本号都没有，踩到上游 breaking change 时不可复现 |
 | **`pyproject.toml`** | 计划书目录结构里有；现在只能靠 `pip install -r` |
 | **`scripts/`** | 计划书 6.1 写的是 `python scripts/ingest.py --path ./data`，实际实现改成了 CLI 的 `--ingest`（更省事），但文档没对齐 |

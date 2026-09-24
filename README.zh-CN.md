@@ -2,7 +2,7 @@
 
 基于 LangChain + 阿里云百炼的学习助手。CLI 与本地 RAG/记忆默认落盘；Web 的聊天、Vision 和模型调用是否发送到供应商由部署配置决定，原始图片不会自动写入 RAG。
 
-**当前进度：Phase 5 P0 服务闭环** —— 在 Phase 4 checkpointer、长期记忆和 RAG 基础上，已加入 FastAPI、SSE 对话、显式文件入库任务、用户隔离、Vision 确认、独立 HTML/CSS/JS 三页客户端、删除/导出、限流、审计、指标和 Docker 开发编排。生产多实例仍需接入 PostgreSQL、Redis、共享队列和正式 OIDC。
+**当前进度：Phase 5 P0 服务闭环** —— 在 Phase 4 checkpointer、长期记忆和 RAG 基础上，已加入 FastAPI、SSE 对话、显式文件入库任务、用户隔离、Vision 确认、独立 HTML/CSS/JS 三页客户端、删除/导出、限流、审计和指标。生产多实例仍需接入 PostgreSQL、Redis、共享队列和正式 OIDC。
 
 ## 环境要求
 
@@ -94,14 +94,6 @@ curl -H "Authorization: Bearer dev-token" http://127.0.0.1:8000/v1/files
 
 第一条只保存文件，embedding 调用次数和向量数量不会增加；第二条才创建异步入库任务。任务失败会给出稳定错误码，可用新的幂等键重试。对话接口是 `multipart/form-data` 的 SSE：`payload` 为 `{"thread_id": ..., "message": ...}`，图片放在 `images` 字段；低置信度识别会发出 `confirmation.required`，通过 `/v1/turns/{turn_id}/vision-confirmation` 确认后才进入 Solver。
 
-Docker 演示（需要先准备 `.env` 中的模型密钥）：
-
-```bash
-docker compose up --build
-```
-
-Compose 启动 `api`、`worker`、PostgreSQL 和 Redis，浏览器前端由 API 在 8000 端口提供。当前本地实现的 SQLite + Chroma 只支持单 API/单 worker 开发模式；生产多实例的数据库、checkpoint、队列、限流和向量后端替换边界见 [PHASE5_PRODUCT_PRD.md](PHASE5_PRODUCT_PRD.md)，代码与验收说明见 [PHASE5_IMPLEMENTATION.md](PHASE5_IMPLEMENTATION.md)。
-
 对话中的命令：
 
 | 命令 | 作用 |
@@ -176,7 +168,7 @@ learning_agent/
 │  ├─ jobs.py              显式入库、删除和图片 TTL worker
 │  ├─ auth.py              Bearer/JWT、限流和请求身份
 │  ├─ vision.py            图片签名、EXIF 清理和结构化 Vision
-│  └─ observability.py     JSON 日志、Prometheus、OTel
+│  └─ observability.py     JSON 日志、OTel
 ├─ frontend/               独立 HTML/CSS/JS 前端
 │  ├─ index.html           页面结构
 │  ├─ css/styles.css       视觉样式与响应式布局
@@ -202,7 +194,6 @@ learning_agent/
 - 本地服务默认使用 SQLite + Chroma 和进程内 sliding-window 限流，必须单 API、单 worker；生产部署需实现 PRD 中的 PostgreSQL、Redis/队列、共享 checkpoint 和向量后端适配。
 - Vision 适配器复用配置的多模态 chat 模型；如果供应商没有图片模型或凭证不可用，接口会返回 `provider_unavailable`，不会把原图送入 RAG，也不会绕过低置信度确认。
 - P0 通过完整答案 SSE，不承诺逐 token 续传；断线后用相同幂等键重读 turn 终态。
-- Compose 含 PostgreSQL/Redis 作为生产兼容依赖，但当前开发 repository 仍写 SQLite；正式迁移和对象存储/病毒扫描属于后续部署工作。
 - 「删除全部」只覆盖应用管理的文件、向量、checkpoint、记忆和本地产物；已发送给模型供应商或 LangSmith 的外部日志受其保留策略控制，服务端不会伪称可以撤回。
 
 ## 引用标注规则
@@ -443,7 +434,7 @@ Recall@4      74.3%      （29/38 通过）
 - [x] **Phase 2** 单 Agent + Tools —— 三个工具就绪，四重护栏已实测生效；`web_search` 的真实搜索结果待填上 key 后验证
 - [x] **Phase 3** LangGraph 多 Agent —— 六个节点的主图已跑通；四条路径（闲聊短路 / 资料问答 / 工具调用 / 澄清）实测分叉正确，审核打回重试用桩验证过；多 Agent 后的实际延迟还没测
 - [x] **Phase 4** 记忆（短期 checkpointer + 长期学习档案 + 知识点状态 + interval_v1 复习计划 + 删除/导出）
-- [x] **Phase 5 P0** 多模态与产品化 —— FastAPI/SSE、显式入库任务、Vision 确认、用户隔离、独立前端和 Docker 开发编排已实现；生产共享后端与正式 OIDC 见 `PHASE5_ISSUES.md`
+- [x] **Phase 5 P0** 多模态与产品化 —— FastAPI/SSE、显式入库任务、Vision 确认、用户隔离和独立前端已实现；生产共享后端与正式 OIDC 见 `PHASE5_ISSUES.md`
 
 ## 已知限制
 
