@@ -1,8 +1,8 @@
 # Study Helper Agent
 
-基于 LangChain + 阿里云百炼的学习助手。本地部署，资料不出本机，向量库落在磁盘上。
+基于 LangChain + 阿里云百炼的学习助手。CLI 与本地 RAG/记忆默认落盘；Web 的聊天、Vision 和模型调用是否发送到供应商由部署配置决定，原始图片不会自动写入 RAG。
 
-**当前进度：Phase 3（LangGraph 多 Agent）** —— Agent 循环从 `planner.py` 的手写 for 循环换成了 LangGraph 主图：Planner / Retriever / Solver / Tutor / Reviewer 五个职责单一的节点，加上一个澄清节点，走条件分支、审核失败重试、检索为空时反问。Phase 1 的 38 题回归集基线 Recall@4 = 74.3%，Phase 3 改造后复跑一致（`rag/` 层未被触碰）。长期记忆、多模态尚未开始。
+**当前进度：Phase 5 P0 服务闭环** —— 在 Phase 4 checkpointer、长期记忆和 RAG 基础上，已加入 FastAPI、SSE 对话、显式文件入库任务、用户隔离、Vision 确认、独立 HTML/CSS/JS 三页客户端、删除/导出、限流、审计、指标和 Docker 开发编排。生产多实例仍需接入 PostgreSQL、Redis、共享队列和正式 OIDC。
 
 ## 环境要求
 
@@ -72,6 +72,36 @@ python main.py --ingest
 python main.py
 ```
 
+### Phase 5 Web/API 快速开始
+
+```bash
+# 复制配置并填写 DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL
+copy .env.example .env       # PowerShell；Linux/macOS 使用 cp
+python api_server.py         # API: http://127.0.0.1:8000
+# 浏览器打开 http://127.0.0.1:8000       # 独立 HTML/CSS/JS 前端（默认 dev-token）
+```
+
+API 除 `/health/live`、`/health/ready` 外都要求 `Authorization: Bearer <token>`。开发模式只接受 `dev-token`，生产环境必须使用 `AUTH_MODE=jwt`（OIDC JWKS）或受控 token 映射，服务端不会信任请求体中的 `user_id`。
+
+文件上传和入库是两个动作：
+
+```bash
+curl -H "Authorization: Bearer dev-token" -F "file=@notes.pdf" http://127.0.0.1:8000/v1/files
+curl -X POST -H "Authorization: Bearer dev-token" -H "Idempotency-Key: notes-index-1" \
+  http://127.0.0.1:8000/v1/files/<file_id>/index-jobs
+curl -H "Authorization: Bearer dev-token" http://127.0.0.1:8000/v1/files
+```
+
+第一条只保存文件，embedding 调用次数和向量数量不会增加；第二条才创建异步入库任务。任务失败会给出稳定错误码，可用新的幂等键重试。对话接口是 `multipart/form-data` 的 SSE：`payload` 为 `{"thread_id": ..., "message": ...}`，图片放在 `images` 字段；低置信度识别会发出 `confirmation.required`，通过 `/v1/turns/{turn_id}/vision-confirmation` 确认后才进入 Solver。
+
+Docker 演示（需要先准备 `.env` 中的模型密钥）：
+
+```bash
+docker compose up --build
+```
+
+Compose 启动 `api`、`worker`、PostgreSQL 和 Redis，浏览器前端由 API 在 8000 端口提供。当前本地实现的 SQLite + Chroma 只支持单 API/单 worker 开发模式；生产多实例的数据库、checkpoint、队列、限流和向量后端替换边界见 [PHASE5_PRODUCT_PRD.md](PHASE5_PRODUCT_PRD.md)，代码与验收说明见 [PHASE5_IMPLEMENTATION.md](PHASE5_IMPLEMENTATION.md)。
+
 对话中的命令：
 
 | 命令 | 作用 |
@@ -81,14 +111,28 @@ python main.py
 | `/tools` | 查看当前装配了哪些工具及约束参数 |
 | `/graph` | 打印主图的 Mermaid 源码 |
 | `/new` | 清空当前会话记忆 |
+| `/resume` | 从 checkpoint 恢复中断轮次 |
+| `/threads` | 列出当前用户的会话 |
+| `/session 名称` | 创建或切换会话 |
 | `/stats` | 查看向量库文件数与分片数 |
 | `/exit` | 退出 |
 
-指定会话（记忆存到 `data/memory/<会话名>.json`）：
+指定会话（使用 SQLite `SqliteSaver`，默认存到 `data/memory/checkpoints.sqlite`）：
 
 ```bash
 python main.py --session 线性代数
+python main.py --user alice --session 线性代数
 ```
+
+相同用户与会话名对应稳定 UUID，重启后继续原会话。`--session` 不再作为 RAG 用户过滤条件；入库和提问都使用 `--user`，默认 `default`。用户参数仅用于本地命名空间，不是鉴权。
+
+默认用户旧 JSON 会话在首次访问时校验并导入一次；损坏或不完整问答会明确报错。成功迁移后旧文件移动到 `data/memory/migration_backup/`，实时入口不再读取。`/new` 删除该线程所有 checkpoints 和 pending writes，并禁止旧历史再导入。
+
+每轮清空临时证据、工具结果和审核状态，只把最终答案写入历史；默认向模型提供最近 20 条历史及本轮输入，按完整问答边界取舍。可通过 `CHECKPOINT_DB` 和 `MEMORY_HISTORY_MAX_MESSAGES` 配置。
+
+中断轮次会阻止新提问，可用 `/resume` 继续或 `/new` 放弃。恢复失败工具节点可能重复外部副作用（如追加卡片），工具重放去重仍待后续实现。当前只支持单进程 CLI。长期记忆、知识点状态和 interval_v1 复习计划现保存在独立的 `LEARNING_DB`（默认 `data/memory/learning.sqlite`）；显式目标/偏好/学习困难会提取为有来源事实，不确定候选通过 `/memory confirm` 或 `/memory reject` 处理。`/memory`、`/knowledge`、`/review today`、`/review feedback`、`/data export` 和 `/data delete` 提供管理入口。
+
+离线测试：`python -m pytest -q`（当前 37 项）。程序调用需先通过 `memory.thread_store().get_thread(user_id, name)` 获取线程，再传给 `graph.run(..., thread_id=...)`；省略 thread_id 则为不持久化的兼容模式，支持旧 history 参数。
 
 ## 目录结构
 
@@ -97,7 +141,22 @@ learning_agent/
 ├─ .env                    配置（不进版本库）
 ├─ config.py               读 .env，全局唯一配置来源
 ├─ llm.py                  对话模型工厂
-├─ memory.py               会话记忆，一个会话一个 JSON 文件
+├─ memory/                 记忆包（与 rag/ 的模块划分方式一致）
+│  ├─ __init__.py          对外接口统一导出
+│  ├─ short_term/          短期会话记忆
+│  │  ├─ checkpoint.py      SQLite saver 初始化、thread 配置
+│  │  ├─ store.py           会话注册、用户归属、查询与清理
+│  │  ├─ legacy.py          旧 JSON 兼容器、校验与一次性迁移
+│  │  └─ pipeline.py        两类存储的生命周期编排
+│  ├─ long_term/           长期学习记忆
+│  │  ├─ database.py        learning.sqlite schema
+│  │  ├─ repository.py      事实、知识点、事件与复习任务
+│  │  ├─ extraction.py      有来源的长期记忆候选提取
+│  │  ├─ knowledge.py       知识点服务门面
+│  │  ├─ scheduler.py       interval_v1 复习调度门面
+│  │  ├─ schemas.py         长期记忆数据契约
+│  │  ├─ service.py         每轮提交与自动提取门面
+│  │  └─ privacy.py         跨短期/长期数据的导出与删除
 ├─ main.py                 主程序（CLI）
 ├─ graph/                  Agent 层：LangGraph 主图（Phase 3）
 │  ├─ state.py             TaskState 与对外的 AgentResult
@@ -111,6 +170,19 @@ learning_agent/
 │  ├─ manifest.py          入库清单，内容哈希做幂等键
 │  ├─ retriever.py         检索与引用格式化
 │  └─ pipeline.py          编排入口 index / ask
+├─ app/                    Phase 5 服务包
+│  ├─ api.py               FastAPI 路由、SSE 和统一错误
+│  ├─ repository.py        文件/任务/turn/审计元数据
+│  ├─ jobs.py              显式入库、删除和图片 TTL worker
+│  ├─ auth.py              Bearer/JWT、限流和请求身份
+│  ├─ vision.py            图片签名、EXIF 清理和结构化 Vision
+│  └─ observability.py     JSON 日志、Prometheus、OTel
+├─ frontend/               独立 HTML/CSS/JS 前端
+│  ├─ index.html           页面结构
+│  ├─ css/styles.css       视觉样式与响应式布局
+│  └─ js/app.js            API 调用、会话和档案交互
+├─ api_server.py           Uvicorn API 入口
+├─ worker.py               开发 worker 入口
 ├─ tools/                  工具包
 │  ├─ registry.py          执行护栏：schema、超时、重试、次数上限、trace
 │  ├─ calculator.py        安全数学计算（AST 求值，不用 eval）
@@ -124,6 +196,14 @@ learning_agent/
    ├─ flashcards/          复习卡片
    └─ traces/              工具调用轨迹（JSONL）
 ```
+
+### Phase 5 已知限制
+
+- 本地服务默认使用 SQLite + Chroma 和进程内 sliding-window 限流，必须单 API、单 worker；生产部署需实现 PRD 中的 PostgreSQL、Redis/队列、共享 checkpoint 和向量后端适配。
+- Vision 适配器复用配置的多模态 chat 模型；如果供应商没有图片模型或凭证不可用，接口会返回 `provider_unavailable`，不会把原图送入 RAG，也不会绕过低置信度确认。
+- P0 通过完整答案 SSE，不承诺逐 token 续传；断线后用相同幂等键重读 turn 终态。
+- Compose 含 PostgreSQL/Redis 作为生产兼容依赖，但当前开发 repository 仍写 SQLite；正式迁移和对象存储/病毒扫描属于后续部署工作。
+- 「删除全部」只覆盖应用管理的文件、向量、checkpoint、记忆和本地产物；已发送给模型供应商或 LangSmith 的外部日志受其保留策略控制，服务端不会伪称可以撤回。
 
 ## 引用标注规则
 
@@ -362,18 +442,18 @@ Recall@4      74.3%      （29/38 通过）
 - [~] **Phase 1** RAG MVP —— 主链路已通，回归集已建并跑出基线；跨语言召回与分片粒度待优化
 - [x] **Phase 2** 单 Agent + Tools —— 三个工具就绪，四重护栏已实测生效；`web_search` 的真实搜索结果待填上 key 后验证
 - [x] **Phase 3** LangGraph 多 Agent —— 六个节点的主图已跑通；四条路径（闲聊短路 / 资料问答 / 工具调用 / 澄清）实测分叉正确，审核打回重试用桩验证过；多 Agent 后的实际延迟还没测
-- [ ] **Phase 4** 记忆（短期 checkpointer + 长期学习档案）
-- [ ] **Phase 5** 多模态与产品化 —— 界面里要有显式的「入库（RAG）」按钮：上传只落盘，点一下才分片入库，并能看到每个文件的索引状态（详见 `PROJECT_PLAN.md` Phase 5）
+- [x] **Phase 4** 记忆（短期 checkpointer + 长期学习档案 + 知识点状态 + interval_v1 复习计划 + 删除/导出）
+- [x] **Phase 5 P0** 多模态与产品化 —— FastAPI/SSE、显式入库任务、Vision 确认、用户隔离、独立前端和 Docker 开发编排已实现；生产共享后端与正式 OIDC 见 `PHASE5_ISSUES.md`
 
 ## 已知限制
 
 - 检索目前是**纯向量召回**，计划书 3.2 节设计的 BM25 混合检索和 reranker 还没做
 - **检索没有相关度阈值，"没找到就反问"这条保护网实际上是死代码**：`k=4` 且无阈值，只要库里够 4 条就一定返回 4 条，哪怕分数只有 0.38。所以拿资料里没有的问题去问，agent 会收到 4 条无关分片然后靠自己知识兜底（标「模型常识」），而**不会**走 `mark_no_evidence → clarify` 说「资料里没找到」。修法是给 `retrieve` 加相关度下限（`similarity_search_with_relevance_scores`），阈值需拿回归集调，否则会误伤真正相关的弱匹配
-- **上传文件后必须手动执行 `/ingest`**，agent 在对话里读不到 `data/uploads/` 的文件本身。这是有意的设计（索引离线、对话在线），但界面没讲清楚，容易让人以为「把文件放进去，agent 就该能读」。Phase 5 的入库按钮是为了解决这个困惑。命令行侧的 `/ingest` 已经是增量的，重复执行不会重复烧 embedding
-- **`--session` 会让检索召回为空**（既有问题，Phase 3 之前就在）：`main.py` 把会话名当 `user_id` 传给检索做过滤，但 `do_ingest()` 建索引时用的是默认的 `user_id="default"`，两者对不上。所以 `python main.py --session 数学` 会一条资料都召不到。要按用户隔离得先让 `do_ingest` 也带上 `user_id`，要只是给记忆换个文件名则应该停止用 `--session` 过滤检索
+- **CLI 上传文件后仍必须手动执行 `/ingest`**，这是 CLI 兼容行为；Web 端使用 `/v1/files` 上传后再点「入库（RAG）」按钮，列表第一屏会显示未入库状态，重复任务受幂等键保护
+- **`--session` 检索过滤问题已修复（2026-09-17）**：用户与会话分离，入库与提问使用相同 `--user`；manifest 按用户与文件路径联合登记，旧 v1 清单自动兼容。
 - 多 Agent 让资料问答路径从 1-2 次模型往返涨到 3 次（Planner + Tutor + Reviewer），闲聊短路能省掉其中两次，但真实 P95 延迟还没实测。若超标，最省事的缓解是给 Reviewer 单独绑一个小模型
 - `ToolTracer.save()` 是追加写且不清空 `records`，同一 `run_id` 重复保存会写出重复行。目前只有 `solver` 调它一次、`run_id` 带时间戳，不会重复；以后若有节点重跑 solver 要注意
 - `make_flashcards` 内部会调一次模型来生成卡片，所以它算一次工具调用但实际是两次模型往返
 - `web_search` 只验证过错误路径（无 key 不装配、假 key 报 401）；真实搜索结果的质量要等你填上 key 才能评估
-- 没有单元测试和 CI（路由函数已是纯函数，补起来成本很低）
-- 多模态读图（`rag/loader.py` 的图片分支）在改成包结构时被移除，Phase 5 再加回来
+- 当前本地服务使用 SQLite + Chroma 和进程内限流，生产多实例需要接入 PostgreSQL、Redis/共享队列、checkpoint 和向量后端；具体边界见 `PHASE5_ISSUES.md`
+- Vision 真实供应商模型、公式/图表红队样例尚未在 CI 调用，需在上线前配置并补充脱敏 fixture

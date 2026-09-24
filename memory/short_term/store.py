@@ -1,6 +1,7 @@
 """会话注册表：UUID、用户归属、会话查询及完整清理。"""
 
 from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 from .checkpoint import open_checkpointer
@@ -39,6 +40,22 @@ class ThreadStore:
         ).fetchone()
         if row is None:
             raise ValueError("会话不存在或不属于当前用户")
+
+    def rename_thread(self, user_id: str, thread_id: str, name: str) -> str:
+        """Rename an owned session while keeping its UUID and checkpoints."""
+        name = name.strip()
+        if not name:
+            raise ValueError("会话名称不能为空")
+        self.check_owner(user_id, thread_id)
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "UPDATE study_threads SET name=? WHERE user_id=? AND thread_id=?",
+                    (name, user_id, thread_id),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("该用户已经有同名会话") from exc
+        return name
 
     def list_threads(self, user_id: str) -> list[tuple[str, str]]:
         return self.connection.execute(

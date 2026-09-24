@@ -2,14 +2,16 @@
 
 对应 PROJECT_PLAN 4.1 的 `TaskState`，有三处有意的偏离，都写在下面字段注释里。
 
-状态里只放**可序列化的纯数据**（trace 存 asdict 后的 dict 而不是 ToolTrace 对象），
-这样 Phase 4 接 thread checkpointer 时不用返工。
+messages 和 Document 由 saver 序列化，工具 trace 保存为 asdict 后的 dict。
+当前 SQLite saver 的消息、证据往返已通过离线集成测试。
 """
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langchain_core.documents import Document
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 
 class TaskState(TypedDict, total=False):
@@ -20,10 +22,9 @@ class TaskState(TypedDict, total=False):
     - `evidence` 是 `list[Document]` 而非 `list[dict]`。rag 的 format_context /
       format_citations / format_locator 三个函数都吃 Document，存 Document 才能
       零改动复用它们；存 dict 就要给三个函数各写一层适配。
-    - `history` 是 `list[dict]`（role/content）而非 `list[BaseMessage]`，
-      直接对接 memory.Memory.history()。messages 归 Phase 4 的 checkpointer 管。
-    - 不加 `thread_id` / `image_context`：前者属 Phase 4，后者属 Phase 5，
-      现在没有任何节点读写，加上去就是死代码。
+    - `history` 仅为旧调用方的非持久化兼容输入。
+    - `messages` 由 checkpointer 跨轮保存；thread_id 是注册表生成的 UUID。
+      image_context 只保存结构化的图片识别上下文，不保存原始图片字节。
     """
 
     # ---- 输入 ----
@@ -31,6 +32,12 @@ class TaskState(TypedDict, total=False):
     user_id: str
     k: int
     history: list[dict]
+    messages: Annotated[list[AnyMessage], add_messages]
+    thread_id: str
+    turn_id: str
+    memory_context: str
+    image_context: dict
+    active_versions: dict[str, int]
 
     # ---- Planner ----
     plan: dict  # {intent, needs_tools, steps[], reason}
@@ -73,3 +80,6 @@ class AgentResult:
     steps: int = 0
     hit_tool_limit: bool = False
     trace_path: str = ""
+    turn_id: str = ""
+    thread_id: str = ""
+    memory_status: str = "disabled"

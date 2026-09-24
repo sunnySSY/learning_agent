@@ -15,7 +15,7 @@
 from .manifest import Manifest
 from .pipeline import SyncResult, ask, index_dir, index_files, index_path, sync_dir
 from .retriever import format_citations, format_context, format_locator, retrieve
-from .store import reset, stats
+from .store import delete_file, delete_user, reset, stats
 
 __all__ = [
     "ask",
@@ -31,4 +31,6 @@ __all__ = [
     "format_locator",
     "reset",
     "stats",
+    "delete_user",
+    "delete_file",
 ]

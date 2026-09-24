@@ -13,11 +13,24 @@ from .store import vectorstore
 DEFAULT_K = 4
 
 
-def retrieve(query: str, k: int = DEFAULT_K, user_id: str | None = None) -> list[Document]:
-    """向量召回。传 user_id 时按用户过滤，避免串号。"""
+def retrieve(query: str, k: int = DEFAULT_K, user_id: str | None = None,
+             active_versions: dict[str, int] | None = None) -> list[Document]:
+    """向量召回，并可限制到 Web 文件的 active 版本。"""
     kwargs: dict = {"k": k}
     if user_id:
-        kwargs["filter"] = {"user_id": user_id}
+        if active_versions is not None:
+            if not active_versions:
+                # Product users with no active file versions must not retrieve
+                # stale/orphan vectors that happen to carry the same user ID.
+                kwargs["filter"] = {"$and": [{"user_id": user_id}, {"file_id": "__no_active_file__"}]}
+                return vectorstore().similarity_search(query, **kwargs)
+            clauses = [
+                {"$and": [{"user_id": user_id}, {"file_id": file_id}, {"index_version": version}]}
+                for file_id, version in active_versions.items()
+            ]
+            kwargs["filter"] = clauses[0] if len(clauses) == 1 else {"$or": clauses}
+        else:
+            kwargs["filter"] = {"user_id": user_id}
     return vectorstore().similarity_search(query, **kwargs)
 
 

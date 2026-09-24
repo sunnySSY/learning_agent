@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 from langchain_core.documents import Document
 
@@ -26,13 +27,27 @@ def detect_type(path: Path) -> str | None:
     return None
 
 
-def _base_meta(path: Path, user_id: str, file_type: str) -> dict:
-    return {
+def _base_meta(path: Path, user_id: str, file_type: str, *, file_id: str | None = None,
+               index_version: int | None = None, index_config_hash: str | None = None) -> dict:
+    meta = {
         "source": str(path.resolve()),
+        "source_locator": path.name,
         "file_name": path.name,
         "file_type": file_type,
         "user_id": user_id,
+        "parser_version": "pdf_text_v1",
+        "splitter_version": "recursive_character_v1",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
+    # Web ingestion uses stable opaque IDs and versioned vectors.  CLI callers
+    # keep the legacy source-only metadata for compatibility.
+    if file_id:
+        meta["file_id"] = file_id
+    if index_version is not None:
+        meta["index_version"] = int(index_version)
+    if index_config_hash:
+        meta["index_config_hash"] = index_config_hash
+    return meta
 
 
 def _load_pdf(path: Path, meta: dict) -> list[Document]:
@@ -57,7 +72,8 @@ def _load_text(path: Path, meta: dict) -> list[Document]:
     return [Document(page_content=text, metadata=dict(meta))]
 
 
-def load_file(path: str | Path, user_id: str = "default") -> list[Document]:
+def load_file(path: str | Path, user_id: str = "default", *, file_id: str | None = None,
+              index_version: int | None = None, index_config_hash: str | None = None) -> list[Document]:
     """加载单个文件。格式不支持或内容为空时返回空列表。"""
     path = Path(path)
     if not path.is_file():
@@ -67,7 +83,8 @@ def load_file(path: str | Path, user_id: str = "default") -> list[Document]:
     if file_type is None:
         return []
 
-    meta = _base_meta(path, user_id, file_type)
+    meta = _base_meta(path, user_id, file_type, file_id=file_id,
+                      index_version=index_version, index_config_hash=index_config_hash)
     if file_type == "pdf":
         return _load_pdf(path, meta)
     if file_type == "markdown":

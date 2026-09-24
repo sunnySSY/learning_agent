@@ -99,9 +99,10 @@ class ToolBudget:
 class ToolTracer:
     """收集工具调用记录，可落盘成 JSONL。"""
 
-    def __init__(self, trace_dir: Path | None = None):
+    def __init__(self, trace_dir: Path | None = None, *, redact: bool = False):
         self.records: list[ToolTrace] = []
         self.trace_dir = trace_dir or cfg.trace_dir
+        self.redact = redact
 
     def add(self, trace: ToolTrace) -> None:
         self.records.append(trace)
@@ -115,7 +116,12 @@ class ToolTracer:
             path = self.trace_dir / f"{run_id}.jsonl"
             with path.open("a", encoding="utf-8") as fh:
                 for trace in self.records:
-                    fh.write(json.dumps(asdict(trace), ensure_ascii=False) + "\n")
+                    payload = asdict(trace)
+                    if self.redact:
+                        payload["args"] = {key: "[redacted]" for key in payload["args"]}
+                        payload["preview"] = ""
+                        payload["error"] = "[redacted]" if payload["error"] else ""
+                    fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
             return path
         except OSError as exc:
             print(f"[trace] 写入失败: {exc}")
@@ -214,7 +220,7 @@ def guard(
     )
 
 
-def build_tools(budget: ToolBudget, tracer: ToolTracer) -> list[BaseTool]:
+def build_tools(budget: ToolBudget, tracer: ToolTracer, user_id: str = "default") -> list[BaseTool]:
     """装配本次运行可用的工具列表。
 
     联网搜索需要 key，没配就不装配，避免模型调用一个注定失败的工具。
@@ -223,10 +229,13 @@ def build_tools(budget: ToolBudget, tracer: ToolTracer) -> list[BaseTool]:
     from .flashcard import FLASHCARD_DESC, make_flashcards
     from .web_search import WEB_SEARCH_DESC, web_search
 
+    def user_flashcards(topic: str, content: str, count: int = 5) -> str:
+        return make_flashcards(topic, content, count, user_id=user_id)
+
     tools = [
         guard(calculate, name="calculate", budget=budget, tracer=tracer,
               description=CALCULATOR_DESC),
-        guard(make_flashcards, name="make_flashcards", budget=budget, tracer=tracer,
+        guard(user_flashcards, name="make_flashcards", budget=budget, tracer=tracer,
               description=FLASHCARD_DESC),
     ]
 

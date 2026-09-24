@@ -6,7 +6,7 @@
 
 图（对应 2.3 的端到端流程）：
 
-    START -> planner -+- unclear ---------------------------> clarify -> END
+    START -> planner -+- unclear ---------------------------> clarify -> finalize -> END
                       +- chat（短路）--------> tutor -+
                       +- calc（不依赖资料）--> solver -+
                       +- 其他 -> retriever -+- 无证据+需工具 -> solver -+
@@ -14,17 +14,21 @@
                                             +- 有证据+需工具 --> solver -+
                                             +- 有证据 -------> tutor ---+
                                                                        |
-                                              tutor -> reviewer -+- 通过 -> END
+                                              tutor -> reviewer -+- 通过 -> finalize -> END
                                                                  +- 打回 -> tutor
-                                                                 +- 用尽 -> clarify -> END
+                                                                 +- 用尽 -> clarify -> finalize -> END
 """
 
 from collections.abc import Iterator
+import atexit
 import re
+from uuid import uuid4
 
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from config import cfg
+from memory import close_store, learning_store, thread_config, thread_store
 from rag import format_locator
 from tools.registry import ToolTrace
 
@@ -96,8 +100,16 @@ def _set_clarify(reason: str):
 
 # ---------------------------------------------------------------- 装图
 
-def build():
-    """编译主图。结果缓存在 build_graph() 里，一般不用直接调这个。"""
+def _finalize(state: TaskState) -> dict:
+    """只将本轮最终回答写入历史；草稿和审核重试不追加消息。"""
+    return {"messages": [AIMessage(
+        content=state.get("draft_answer", ""),
+        id=f"{state['turn_id']}-assistant",
+    )]}
+
+
+def build(checkpointer=None):
+    """编译主图；传入 saver 时支持线程持久化和恢复。"""
     builder = StateGraph(TaskState)
 
     builder.add_node("planner", planner_node)
@@ -106,6 +118,7 @@ def build():
     builder.add_node("tutor", tutor_node)
     builder.add_node("reviewer", reviewer_node)
     builder.add_node("clarify", clarify_node)
+    builder.add_node("finalize", _finalize)
 
     # 澄清节点的三种入口：各配一个极小的标记节点，把原因写进状态。
     # 比让 clarify_node 去猜「我是被谁叫来的」清楚得多。
@@ -131,39 +144,60 @@ def build():
     )
     builder.add_edge("solver", "tutor")
     builder.add_conditional_edges(
-        "tutor", route_after_tutor, {"reviewer": "reviewer", "done": END}
+        "tutor", route_after_tutor, {"reviewer": "reviewer", "done": "finalize"}
     )
     builder.add_conditional_edges(
         "reviewer",
         route_after_review,
-        {"again": "tutor", "clarify": "mark_unverified", "done": END},
+        {"again": "tutor", "clarify": "mark_unverified", "done": "finalize"},
     )
 
     for marker in ("mark_ambiguous", "mark_no_evidence", "mark_unverified"):
         builder.add_edge(marker, "clarify")
-    builder.add_edge("clarify", END)
+    builder.add_edge("clarify", "finalize")
+    builder.add_edge("finalize", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 _GRAPH = None
+_EPHEMERAL_GRAPH = None
 
 
-def compiled_graph():
-    """全局唯一的主图实例。编译一次就够，避免每次问答重装一遍。"""
-    global _GRAPH
+def compiled_graph(persistent: bool = True):
+    """分别缓存持久化图与评估用无状态图。"""
+    global _GRAPH, _EPHEMERAL_GRAPH
+    if not persistent:
+        if _EPHEMERAL_GRAPH is None:
+            _EPHEMERAL_GRAPH = build()
+        return _EPHEMERAL_GRAPH
     if _GRAPH is None:
-        _GRAPH = build()
+        _GRAPH = build(thread_store().saver)
     return _GRAPH
+
+
+def close() -> None:
+    """释放连接与持有 saver 的图缓存，允许随后重新打开。"""
+    global _GRAPH, _EPHEMERAL_GRAPH
+    _GRAPH = None
+    _EPHEMERAL_GRAPH = None
+    close_store()
+
+
+atexit.register(close)
 
 
 # ---------------------------------------------------------------- 对外入口
 
 def run_stream(
-    question: str,
+    question: str | None,
     history: list[dict] | None = None,
     user_id: str = "default",
     k: int = 4,
+    *,
+    thread_id: str | None = None,
+    active_versions: dict[str, int] | None = None,
+    image_context: dict | None = None,
 ) -> Iterator[dict]:
     """跑一轮问答，逐个产出事件。
 
@@ -173,18 +207,55 @@ def run_stream(
 
     custom 事件由各节点的 get_stream_writer() 发出（显示文案在节点内部），
     values 只取最后一条作为终态来组装最终结果。
-    """
-    state: TaskState = {
-        "question": question,
-        "user_id": user_id,
-        "k": k,
-        "history": list(history or []),
-    }
 
-    final: dict = dict(state)
+    thread_id 必须来自 ThreadStore，并属于 user_id；此模式由 checkpoint
+    管理历史。question=None 恢复未完成轮次。无 thread_id 时保持旧 history
+    调用契约，不创建检查点。恢复不保证外部工具副作用恰好执行一次。
+    """
+    persistent = thread_id is not None
+    graph = compiled_graph(persistent=persistent)
+    config = thread_config(thread_id) if persistent else None
+    if persistent:
+        thread_store().check_owner(user_id, thread_id)
+        if history is not None:
+            raise ValueError("持久化会话不能同时传入 history")
+        snapshot = graph.get_state(config)
+        if question is None:
+            if not snapshot.next:
+                raise ValueError("当前会话没有待恢复的轮次")
+        elif snapshot.next:
+            raise ValueError("上轮尚未完成，请使用 /resume 恢复或 /new 清空会话")
+    elif question is None:
+        raise ValueError("恢复轮次需要 thread_id")
+
+    state = None
+    if question is not None:
+        if not question.strip():
+            raise ValueError("问题不能为空")
+        turn_id = str(uuid4())
+        messages = []
+        if not persistent:
+            messages = [
+                (HumanMessage if item["role"] == "user" else AIMessage)(content=item["content"])
+                for item in history or []
+            ]
+        messages.append(HumanMessage(content=question, id=f"{turn_id}-user"))
+        # checkpointer 会合并旧状态：临时输出必须全部显式重置。
+        state = {
+            "question": question, "user_id": user_id, "k": k,
+            "history": [], "messages": messages,
+        "thread_id": thread_id or "", "turn_id": turn_id,
+            "memory_context": learning_store().memory_context(user_id) if persistent else "",
+            "image_context": image_context or {}, "active_versions": active_versions,
+            "plan": {}, "evidence": [], "draft_answer": "",
+            "tool_results": [], "trace_path": "", "hit_tool_limit": False,
+            "review": None, "review_rounds": 0, "clarify_reason": "", "steps": 0,
+        }
+
+    final: dict = dict(state or {})
     steps = 0
 
-    for mode, chunk in compiled_graph().stream(state, stream_mode=["custom", "values"]):
+    for mode, chunk in graph.stream(state, config=config, stream_mode=["custom", "values"]):
         if mode == "custom":
             steps += 1  # 每个节点恰好发一条事件，事件数即节点数
             yield chunk
@@ -195,17 +266,19 @@ def run_stream(
 
 
 def run(
-    question: str,
+    question: str | None,
     history: list[dict] | None = None,
     user_id: str = "default",
     k: int = 4,
+    *,
+    thread_id: str | None = None,
 ) -> AgentResult:
     """非流式入口，签名与改造前的 planner.run 完全一致。
 
     给 evaluation 和不关心进度的调用方留一条简单路径。
     """
     result = AgentResult(answer="")
-    for event in run_stream(question, history=history, user_id=user_id, k=k):
+    for event in run_stream(question, history=history, user_id=user_id, k=k, thread_id=thread_id):
         if event["type"] == "done":
             result = event["result"]
     return result
@@ -228,6 +301,9 @@ def _to_result(state: dict, steps: int) -> AgentResult:
         steps=steps,
         hit_tool_limit=bool(state.get("hit_tool_limit")),
         trace_path=state.get("trace_path") or "",
+        turn_id=state.get("turn_id") or "",
+        thread_id=state.get("thread_id") or "",
+        memory_status="loaded" if state.get("memory_context") is not None and state.get("thread_id") else "disabled",
     )
 
 

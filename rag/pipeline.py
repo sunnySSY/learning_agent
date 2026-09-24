@@ -7,12 +7,13 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from llm import chat_model
+from config import cfg
 
 from .loader import SUPPORTED_SUFFIXES, list_files, load_file
 from .manifest import Manifest
 from .retriever import format_context, retrieve
 from .splitter import split_documents
-from .store import add, drop_source
+from .store import add, drop_file_version, drop_source
 
 RAG_SYSTEM = """你是一个学习助手。根据下面的资料片段回答用户的问题。
 
@@ -35,16 +36,25 @@ NO_CONTEXT_SYSTEM = """你是一个学习助手。用户提问了，但在他的
 
 # ---------------------------------------------------------------- 索引
 
-def index_path(path: str | Path, user_id: str = "default") -> int:
+def index_path(path: str | Path, user_id: str = "default", *, file_id: str | None = None,
+               index_version: int | None = None, index_config_hash: str | None = None,
+               replace: bool = True) -> int:
     """索引单个文件，返回写入的分片数。格式不支持时返回 0。"""
     path = Path(path)
-    documents = load_file(path, user_id=user_id)
+    documents = load_file(path, user_id=user_id, file_id=file_id,
+                          index_version=index_version, index_config_hash=index_config_hash)
     if not documents:
         return 0
 
     chunks = split_documents(documents)
-    # 先删旧分片，否则文件改短后会残留
-    drop_source(str(path.resolve()))
+    for chunk in chunks:
+        chunk.metadata.setdefault("embedding_model", cfg.embed_model)
+    # CLI replaces a source. Web reindex writes a new version and keeps the
+    # previous active version until the metadata transaction succeeds.
+    if replace:
+        drop_source(str(path.resolve()), user_id=user_id)
+    elif file_id and index_version is not None:
+        drop_file_version(file_id, index_version, user_id=user_id)
     add(chunks)
     return len(chunks)
 
@@ -120,19 +130,19 @@ def sync_dir(
             result.skipped.append(name)
             continue
 
-        is_update = manifest.key(path) in manifest.entries
+        is_update = manifest.key(path, user_id) in manifest.entries
         try:
             count = index_path(path, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             result.failed.append((name, str(exc)))
             # 入库失败就别在清单里留「已入库」的假记录，否则下次会被当成最新的跳过
-            manifest.forget(path)
+            manifest.forget(path, user_id)
             continue
 
         if count == 0:
             # 解析不出文本，典型是扫描版 PDF（图片页，没有文字层）
             result.empty.append(name)
-            manifest.forget(path)
+            manifest.forget(path, user_id)
             continue
 
         (result.updated if is_update else result.added).append((name, count))
@@ -140,13 +150,13 @@ def sync_dir(
 
     # 磁盘上已经没有的文件，连带删掉它在库里留下的分片，否则会变成孤儿被检索到
     if sweep_deleted:
-        on_disk = {manifest.key(p) for p in files}
-        for key in manifest.missing_from(on_disk):
-            if manifest.entries[key].user_id != user_id:
+        on_disk = {str(p.resolve()) for p in files}
+        for key in manifest.paths_for(user_id):
+            if key in on_disk:
                 continue
-            drop_source(key)
+            drop_source(key, user_id=user_id)
             result.removed.append(Path(key).name)
-            manifest.forget(Path(key))
+            manifest.forget(Path(key), user_id)
 
     manifest.save()
     return result

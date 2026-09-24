@@ -37,12 +37,42 @@ def add(chunks: list[Document]) -> None:
         vectorstore().add_documents(chunks)
 
 
-def drop_source(source: str) -> None:
+def drop_source(source: str, user_id: str = "default") -> None:
     """删掉某个文件的旧分片。文件改短后不做这步会残留孤儿分片。"""
     try:
-        vectorstore().delete(where={"source": source})
+        vectorstore().delete(where={"$and": [{"source": source}, {"user_id": user_id}]})
     except Exception:
         # 集合为空或该 source 不存在时，部分 Chroma 版本会抛错，忽略即可
+        pass
+
+
+def drop_file(file_id: str, user_id: str = "default") -> None:
+    """Remove every version of an opaque Web file for one user."""
+    try:
+        vectorstore().delete(where={"$and": [{"file_id": file_id}, {"user_id": user_id}]})
+    except Exception:
+        pass
+
+
+# Product-facing name; keep ``drop_file`` for the existing CLI vocabulary.
+delete_file = drop_file
+
+
+def drop_file_version(file_id: str, index_version: int, user_id: str = "default") -> None:
+    try:
+        vectorstore().delete(where={"$and": [{"file_id": file_id}, {"index_version": int(index_version)}, {"user_id": user_id}]})
+    except Exception:
+        pass
+
+
+def drop_file_old_versions(file_id: str, keep_version: int, user_id: str = "default") -> None:
+    """Best-effort cleanup after a new version has become active."""
+    try:
+        data = vectorstore().get(where={"$and": [{"file_id": file_id}, {"user_id": user_id}]}, include=["metadatas"])
+        ids = [identifier for identifier, metadata in zip(data.get("ids") or [], data.get("metadatas") or []) if metadata and metadata.get("index_version") != int(keep_version)]
+        if ids:
+            vectorstore().delete(ids=ids)
+    except Exception:
         pass
 
 
@@ -54,6 +84,18 @@ def reset() -> None:
         print(f"[store] 清空失败: {exc}")
     # 集合没了，缓存里的客户端也失效了，重建
     vectorstore.cache_clear()
+
+
+def delete_user(user_id: str) -> int:
+    """删除一个用户的所有向量，保留其他用户内容。"""
+    try:
+        data = vectorstore().get(where={"user_id": user_id}, include=["metadatas"])
+        ids = data.get("ids") or []
+        if ids:
+            vectorstore().delete(ids=ids)
+        return len(ids)
+    except Exception:
+        return 0
 
 
 def stats() -> dict:

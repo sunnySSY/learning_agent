@@ -51,7 +51,7 @@ def _safe_name(topic: str) -> str:
     return name[:40] or "cards"
 
 
-def make_flashcards(topic: str, content: str, count: int = 5) -> str:
+def make_flashcards(topic: str, content: str, count: int = 5, user_id: str = "default") -> str:
     """生成复习卡片并保存。"""
     topic = (topic or "").strip()
     content = (content or "").strip()
@@ -89,8 +89,11 @@ def make_flashcards(topic: str, content: str, count: int = 5) -> str:
         raise ValueError("模型返回的卡片缺少 question 或 answer 字段")
 
     # 与同主题的旧卡片合并
-    cfg.flashcard_dir.mkdir(parents=True, exist_ok=True)
-    path = cfg.flashcard_dir / f"{_safe_name(topic)}.json"
+    # 用户空间使用安全目录名；旧根目录文件仅作兼容备份，不与新用户共享。
+    user_dir_name = re.sub(r"[^A-Za-z0-9_.-]", "_", user_id).strip(".")[:80] or "default"
+    user_dir = cfg.flashcard_dir / user_dir_name
+    user_dir.mkdir(parents=True, exist_ok=True)
+    path = user_dir / f"{_safe_name(topic)}.json"
     existing: list[dict] = []
     if path.exists():
         try:

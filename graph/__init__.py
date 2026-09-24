@@ -12,7 +12,7 @@ tools 负责「单个工具怎么被安全地调用」，本包负责「一轮�
 日常只用本文件导出的这几个名字，其余属于实现细节。
 """
 
-from .builder import build, compiled_graph, run, run_stream
+from .builder import build, close, compiled_graph, run, run_stream
 from .state import AgentResult, TaskState
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "run_stream",
     "build",
     "compiled_graph",
+    "close",
     "AgentResult",
     "TaskState",
 ]

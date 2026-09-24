@@ -4,7 +4,9 @@ A local-first study assistant built on LangChain + LangGraph and Qwen (can be re
 Point it at your own lecture notes and textbooks, ask questions in natural language, and get
 answers that cite the exact page, heading, or line they came from.
 
-Your documents never leave the machine: parsing, chunking, and the vector store all run locally.
+The CLI parses, chunks, and stores vectors locally. The Web chat/Vision path can send configured
+inputs to the selected model provider; chat images are temporary and are never automatically
+indexed into RAG.
 
 ## Features
 
@@ -21,6 +23,15 @@ Your documents never leave the machine: parsing, chunking, and the vector store 
 - **Session memory** — conversation history is persisted per session and survives restarts.
 - **Regression eval harness** — 38-question set measuring Recall@k, citation precision, refusal
   accuracy, and latency.
+- **Phase 5 service** — FastAPI Bearer-authenticated API, SSE chat, explicit upload/index jobs,
+  versioned user-scoped RAG, structured Vision confirmation, standalone HTML/CSS/JS client, export/delete,
+  rate limits, audit events, Prometheus metrics, and Docker Compose roles.
+
+Run the API with `python api_server.py` and open `http://127.0.0.1:8000` for the standalone HTML/CSS/JS client. In
+development, `Bearer dev-token` is the only accepted credential. Uploading a file only stores it;
+call `POST /v1/files/{file_id}/index-jobs` with an `Idempotency-Key` to start embedding. See
+[`PHASE5_PRODUCT_PRD.md`](PHASE5_PRODUCT_PRD.md) for the endpoint contract and production
+backend boundaries.
 
 ## How it works
 
@@ -77,7 +88,26 @@ learning_agent/
 ├─ main.py             # CLI entry point (display only; all logic lives in the packages)
 ├─ config.py           # .env-backed configuration
 ├─ llm.py              # chat model factory
-├─ memory.py           # per-session conversation memory (JSON on disk)
+├─ memory/             # memory package (same module layout style as rag/)
+│  ├─ __init__.py      # public interfaces
+│  ├─ short_term/      # LangGraph checkpoints and session registry
+│  │  ├─ checkpoint.py # SQLite saver initialization and thread config
+│  │  ├─ store.py      # thread registry, ownership, listing and clearing
+│  │  ├─ legacy.py     # legacy JSON adapter and one-time migration
+│  │  └─ pipeline.py   # cross-layer store lifecycle
+│  ├─ long_term/       # facts, knowledge points and review plans
+│  │  ├─ database.py   # learning.sqlite schema
+│  │  ├─ repository.py  # transactional long-term memory store
+│  │  ├─ extraction.py # source-bound candidate extraction
+│  │  ├─ knowledge.py  # knowledge-point service facade
+│  │  ├─ scheduler.py  # interval_v1 review facade
+│  │  ├─ schemas.py    # long-term memory contracts
+│  │  ├─ service.py    # turn commit and automatic extraction
+│  │  └─ privacy.py    # cross-layer export and deletion
+├─ frontend/           # standalone browser client
+│  ├─ index.html       # page structure
+│  ├─ css/styles.css   # visual system and responsive layout
+│  └─ js/app.js        # API calls, chat, sessions and archive views
 ├─ graph/              # LangGraph orchestration
 │  ├─ state.py         #   TaskState and the AgentResult contract
 │  ├─ nodes.py         #   the six agent nodes and their prompts
@@ -101,11 +131,9 @@ learning_agent/
 
 ## Status
 
-**Implemented:** RAG pipeline with incremental indexing (Phase 1), guarded tool calling (Phase 2),
-and LangGraph multi-agent orchestration (Phase 3).
-
-**Not yet implemented:** long-term learner profiles, multimodal input (formula and problem
-screenshots), hybrid retrieval with reranking, and a web API layer.
+**Implemented:** RAG pipeline with incremental indexing, guarded tool calling, LangGraph
+multi-agent orchestration, long-term learning profiles, multimodal input, a FastAPI/SSE service,
+and a standalone HTML/CSS/JS browser client.
 
 ## Requirements
 
@@ -140,12 +168,15 @@ All configuration lives in `.env` (git-ignored; see `config.py` for defaults).
 | `MAX_TOOL_CALLS` / `TOOL_TIMEOUT` / `TOOL_MAX_RETRIES` | Tool guardrails |
 | `REVIEW_MAX_ROUNDS` | Max review rounds before falling back to a clarifying question |
 | `LANGSMITH_TRACING` / `LANGSMITH_PROJECT` | Optional LangSmith tracing |
+| `CHECKPOINT_DB` | SQLite checkpoints, default `./data/memory/checkpoints.sqlite` |
+| `MEMORY_HISTORY_MAX_MESSAGES` | Recent history sent to the model, default 20, plus current input |
 
 ## Run
 
 ```bash
 python main.py                     # start chatting (documents go in ./data/uploads)
 python main.py --session math      # separate memory per session
+python main.py --user alice --session math # independent local user namespace
 python main.py --ingest            # incremental ingest, then exit
 python main.py --ingest --all      # ignore the manifest, re-chunk everything
 python main.py --ingest --path notes.pdf
@@ -161,7 +192,30 @@ In-chat commands:
 | `/graph` | Print the graph's Mermaid source |
 | `/stats` | Vector store status |
 | `/new` | Clear the current session memory |
+| `/resume` | Resume an interrupted graph turn |
+| `/threads` | List the current user's sessions |
+| `/session name` | Create or switch sessions |
 | `/exit` | Quit |
+
+Sessions use persistent LangGraph `SqliteSaver` checkpoints and UUID thread IDs.
+Restart with the same `--user` and `--session` to continue. Session names do not
+change document ownership; use the same `--user` for ingest and chat.
+The default user's old JSON history is imported once after validation. Old files
+remain as backups but are no longer updated. `/new` deletes all checkpoints and
+prevents those backups from being imported again; it does not erase backup files.
+
+Only final answers enter conversation history; per-turn evidence and review
+outputs are reset. An unfinished turn blocks new questions until `/resume` or
+`/new`. Resuming a failed tool node can repeat external side effects, including
+flashcard writes; tool replay deduplication is a later milestone. This is a local
+single-process CLI, and `--user` provides namespacing rather than authentication.
+New flashcards and traces are stored under a safe user directory and are included in full-user deletion.
+Long-term facts, knowledge points, and the deterministic `interval_v1` review plan are stored in the separate `LEARNING_DB` (default `data/memory/learning.sqlite`). Explicit goals/preferences/learning difficulties are extracted with source quotes; uncertain candidates are handled with `/memory confirm` or `/memory reject`. Use `/memory`, `/knowledge`, `/review today`, `/review feedback`, `/data export`, and `/data delete` for the Phase 4 CLI.
+
+Offline integration tests: `python -m unittest discover -s tests -v`.
+Programmatic `graph.run(..., thread_id=...)` uses a thread registered through
+`memory.thread_store().get_thread(user_id, name)`. Calls without `thread_id` remain
+ephemeral and support the old `history` parameter without writing checkpoints.
 
 ## Documentation
 

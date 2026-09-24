@@ -9,12 +9,24 @@
 """
 
 import argparse
+import json
+import shlex
 
 from config import cfg  # 必须第一个导入：确保 .env 先于 langchain 加载
 
 import graph
 import rag
-from memory import thread_config, thread_store
+from memory import (
+    MemoryService,
+    delete_user_data,
+    delete_fact_with_context,
+    export_user,
+    learning_store,
+    preview_delete,
+    reset_thread,
+    thread_config,
+    thread_store,
+)
 from tools import describe_tools
 
 BANNER = """Study Helper Agent
@@ -36,6 +48,10 @@ BANNER = """Study Helper Agent
   /resume         恢复中断轮次（工具副作用暂不保证恰好执行一次）
   /threads        列出当前用户的会话
   /session 名称   创建或切换会话
+  /memory         查看长期记忆和待确认候选
+  /knowledge      查看知识点状态
+  /review today   查看今日复习任务
+  /data export ...  导出长期记忆或会话
   /stats          查看向量库状态
   /exit           退出
 """
@@ -110,6 +126,8 @@ def main() -> int:
         return 0
 
     store = thread_store()
+    learning = learning_store()
+    memory_service = MemoryService(learning)
     thread_id = store.get_thread(args.user, args.session)
     try:
         imported = store.import_legacy(graph.compiled_graph(), args.user, thread_id, cfg.memory_dir)
@@ -147,12 +165,104 @@ def main() -> int:
         if question in ("/exit", "/quit"):
             break
         if question == "/new":
-            store.clear(args.user, thread_id)
+            reset_thread(learning, store, args.user, thread_id)
             print("会话记忆已清空\n")
             continue
         if question == "/threads":
             for tid, name in store.list_threads(args.user):
                 print(f"  {name} ({tid}){' [当前]' if tid == thread_id else ''}")
+            print()
+            continue
+        if question == "/memory" or question.startswith("/memory "):
+            parts = shlex.split(question)
+            try:
+                if len(parts) == 1:
+                    print(json.dumps(memory_service.list_memory(args.user), ensure_ascii=False, indent=2))
+                elif parts[1] == "confirm" and len(parts) == 3:
+                    print(f"已确认记忆：{learning.confirm_candidate(args.user, parts[2])}")
+                elif parts[1] == "reject" and len(parts) == 3:
+                    learning.reject_candidate(args.user, parts[2]); print("已拒绝候选记忆")
+                elif parts[1] == "set" and len(parts) >= 4:
+                    raw_key, value = parts[2], " ".join(parts[3:])
+                    if ":" in raw_key:
+                        kind, key = raw_key.split(":", 1)
+                    else:
+                        kind, key = "preference", raw_key
+                    print(f"已保存记忆：{memory_service.set_fact(args.user, key, value, kind)}")
+                elif parts[1] == "delete" and len(parts) == 3:
+                    print(delete_fact_with_context(learning, store, args.user, parts[2]))
+                elif parts[1] == "auto" and len(parts) == 3:
+                    learning.set_auto_extract(args.user, parts[2].lower() == "on"); print("自动提取已更新")
+                elif parts[1] == "reset":
+                    preview = preview_delete(learning, store, args.user, "memory")
+                    print(json.dumps(preview, ensure_ascii=False))
+                    if input("确认清空长期记忆和相关会话？输入 yes：").strip().lower() == "yes":
+                        print(delete_user_data(learning, store, args.user, "memory"))
+                    else: print("已取消")
+                else:
+                    print("用法：/memory | confirm ID | reject ID | set kind:key value | delete ID | auto on/off | reset")
+            except (ValueError, OSError) as exc:
+                print(f"[记忆] {exc}")
+            print()
+            continue
+        if question == "/knowledge" or question.startswith("/knowledge "):
+            parts = shlex.split(question)
+            try:
+                if len(parts) >= 2 and parts[1] == "add" and len(parts) >= 4:
+                    kid = learning.add_knowledge(args.user, parts[2], " ".join(parts[3:])); print(f"知识点 ID：{kid}")
+                elif len(parts) >= 2 and parts[1] == "self-rate" and len(parts) == 4:
+                    learning.self_rate(args.user, parts[2], int(parts[3])); print("已保存自评并安排复习")
+                elif len(parts) >= 2 and parts[1] == "delete" and len(parts) == 3:
+                    learning.delete_knowledge(args.user, parts[2]); print("已删除知识点及其学习事件")
+                else:
+                    print(json.dumps(learning.knowledge_rows(args.user, parts[1] if len(parts) == 2 else None), ensure_ascii=False, indent=2))
+            except (ValueError, OSError) as exc:
+                print(f"[知识点] {exc}")
+            print()
+            continue
+        if question == "/review today" or question.startswith("/review "):
+            parts = shlex.split(question)
+            try:
+                if len(parts) >= 2 and parts[1] == "today":
+                    minutes = int(parts[3]) if len(parts) == 4 and parts[2] == "--minutes" else None
+                    plan = memory_service.review_plan(args.user, minutes)
+                    print(json.dumps({key: ([item.__dict__ for item in value] if isinstance(value, list) else value) for key, value in plan.items()}, ensure_ascii=False, indent=2))
+                elif len(parts) == 4 and parts[1] == "feedback":
+                    print(learning.feedback(args.user, parts[2], parts[3], f"cli-{args.user}-{parts[2]}-{parts[3]}-{int(__import__('time').time())}"))
+                elif len(parts) in {4, 5} and parts[1] == "postpone":
+                    days = int(parts[4]) if len(parts) == 5 and parts[3] == "--days" else int(parts[3])
+                    print({"due_at": learning.postpone(args.user, parts[2], days)})
+                else:
+                    print("用法：/review today [--minutes N] | feedback TASK RATING | postpone TASK DAYS")
+            except (ValueError, OSError) as exc:
+                print(f"[复习] {exc}")
+            print()
+            continue
+        if question == "/data export" or question.startswith("/data export "):
+            parts = shlex.split(question)
+            try:
+                scope = parts[parts.index("--scope") + 1] if "--scope" in parts else "all"
+                output = parts[parts.index("--out") + 1] if "--out" in parts else f"{args.user}-export.json"
+                payload = export_user(learning, store, args.user, scope, output)
+                print(f"已导出 {len(payload['data'])} 类数据到 {output}\n")
+            except (ValueError, OSError, FileExistsError) as exc:
+                print(f"[导出] {exc}\n")
+            continue
+        if question.startswith("/data delete") or question.startswith("/thread delete"):
+            parts = shlex.split(question)
+            try:
+                if parts[0] == "/thread":
+                    scope, target = "thread", parts[2]
+                else:
+                    scope = parts[parts.index("--scope") + 1] if "--scope" in parts else "all"
+                    target = parts[parts.index("--thread") + 1] if "--thread" in parts else None
+                preview = preview_delete(learning, store, args.user, scope, target)
+                print(json.dumps(preview, ensure_ascii=False, indent=2))
+                if input("确认删除？输入 yes：").strip().lower() == "yes":
+                    print(delete_user_data(learning, store, args.user, scope, target))
+                else: print("已取消")
+            except (ValueError, OSError) as exc:
+                print(f"[删除] {exc}")
             print()
             continue
         if question.startswith("/session "):
@@ -209,6 +319,17 @@ def main() -> int:
         if result is None:
             print("[出错] 本轮没有产出结果\n")
             continue
+
+        try:
+            current = graph.compiled_graph().get_state(thread_config(thread_id)).values
+            turn_question = current.get("question", question)
+            candidates = memory_service.commit_turn(
+                args.user, thread_id, result.turn_id, turn_question, result.answer, result.turn_id
+            )
+            if candidates:
+                print(f"\n[记忆] 本轮新增 {len(candidates)} 条候选/事实；用 /memory 查看。")
+        except (ValueError, OSError) as exc:
+            print(f"[记忆] 本轮提取失败，不影响答案：{exc}")
 
         print(f"\n助手 > {result.answer}")
 

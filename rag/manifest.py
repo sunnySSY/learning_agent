@@ -22,7 +22,7 @@ from pathlib import Path
 from config import cfg
 
 # 清单格式版本。将来改结构时靠它做兼容，对不上就当作空清单全量重建。
-VERSION = 1
+VERSION = 2
 
 # 算哈希时的分块大小，避免一次性把大文件读进内存
 _CHUNK = 1 << 20
@@ -63,7 +63,7 @@ def file_hash(path: Path) -> str:
 
 
 class Manifest:
-    """清单的读改写。键是文件的绝对路径（与向量库 metadata 里的 source 一致）。"""
+    """清单的读改写。键为 JSON 编码的 [user_id, 绝对路径]。"""
 
     def __init__(self, path: Path | None = None):
         self.path = path or cfg.manifest_path
@@ -78,9 +78,11 @@ class Manifest:
         except (json.JSONDecodeError, OSError):
             # 清单坏了不影响正确性，当作空的重建即可
             return
-        if raw.get("version") != VERSION:
+        if raw.get("version") not in (1, VERSION):
             return
         self.entries = {k: Entry(**v) for k, v in (raw.get("files") or {}).items()}
+        if raw.get("version") == 1:
+            self.entries = {self.key(Path(k), v.user_id): v for k, v in self.entries.items()}
 
     def save(self) -> None:
         payload = {
@@ -97,17 +99,17 @@ class Manifest:
             print(f"[manifest] 写入失败: {exc}")
 
     # ---- 查询 ----
-    def key(self, path: Path) -> str:
-        return str(Path(path).resolve())
+    def key(self, path: Path, user_id: str = "default") -> str:
+        return json.dumps([user_id, str(Path(path).resolve())], ensure_ascii=False)
 
     def is_current(self, path: Path, user_id: str) -> bool:
-        entry = self.entries.get(self.key(path))
+        entry = self.entries.get(self.key(path, user_id))
         return bool(entry and entry.matches(path, user_id))
 
     def record(self, path: Path, user_id: str, chunks: int) -> None:
         """记下一次成功的入库。"""
         stat = path.stat()
-        self.entries[self.key(path)] = Entry(
+        self.entries[self.key(path, user_id)] = Entry(
             sha256=file_hash(path),
             size=stat.st_size,
             mtime=stat.st_mtime,
@@ -115,12 +117,24 @@ class Manifest:
             user_id=user_id,
         )
 
-    def forget(self, path: Path) -> None:
-        self.entries.pop(self.key(path), None)
+    def forget(self, path: Path, user_id: str = "default") -> None:
+        self.entries.pop(self.key(path, user_id), None)
 
     def missing_from(self, on_disk: set[str]) -> list[str]:
         """清单里有、但磁盘上已经没有的路径。"""
-        return [key for key in self.entries if key not in on_disk]
+        return [json.loads(key)[1] for key in self.entries if json.loads(key)[1] not in on_disk]
 
     def paths_for(self, user_id: str) -> list[str]:
-        return [k for k, v in self.entries.items() if v.user_id == user_id]
+        return [json.loads(k)[1] for k, v in self.entries.items() if v.user_id == user_id]
+
+    def remove_user(self, user_id: str) -> int:
+        keys = [key for key, value in self.entries.items() if value.user_id == user_id]
+        for key in keys:
+            self.entries.pop(key, None)
+        if keys:
+            self.save()
+        return len(keys)
+
+    def users_for_path(self, path: str | Path) -> list[str]:
+        resolved = str(Path(path).resolve())
+        return [value.user_id for key, value in self.entries.items() if json.loads(key)[1] == resolved]
